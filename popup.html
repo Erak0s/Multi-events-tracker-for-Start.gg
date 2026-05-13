@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>start.gg Multi-Event Tracker</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      width: 320px;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0d0d1c;
+      color: #e0e0ee;
+    }
+
+    /* ── Header ── */
+    header {
+      background: linear-gradient(135deg, #181830, #241840);
+      padding: 14px 16px;
+      border-bottom: 2px solid #f5a623;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    header .logo { font-size: 20px; }
+    header h1 { font-size: 13px; font-weight: 700; color: #fff; }
+    header p  { font-size: 10px; color: #8888aa; margin-top: 2px; }
+
+    /* ── Sections ── */
+    .section { padding: 14px 16px; border-bottom: 1px solid #1e1e34; }
+
+    label.field-label {
+      display: block;
+      font-size: 10px;
+      font-weight: 700;
+      color: #7788aa;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      margin-bottom: 6px;
+    }
+
+    input[type="text"] {
+      width: 100%;
+      padding: 8px 11px;
+      background: #181830;
+      border: 1px solid #2e2e50;
+      border-radius: 8px;
+      color: #e0e0ee;
+      font-size: 12px;
+      font-family: monospace;
+      outline: none;
+      transition: border-color .2s;
+    }
+    input[type="text"]:focus { border-color: #f5a623; }
+
+    .hint {
+      margin-top: 5px;
+      font-size: 10px;
+      color: #556;
+      line-height: 1.5;
+    }
+    .hint a { color: #f5a623; text-decoration: none; }
+    .hint a:hover { text-decoration: underline; }
+
+    .row-btns { display: flex; gap: 8px; margin-top: 10px; }
+
+    button {
+      flex: 1;
+      padding: 8px;
+      border: none;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity .15s, transform .1s;
+    }
+    button:active { transform: scale(.97); }
+
+    #btnSave { background: #f5a623; color: #0d0d1c; }
+    #btnSave:hover { opacity: .88; }
+    #btnClear { background: #1e1e34; color: #8888aa; border: 1px solid #2e2e50; }
+    #btnClear:hover { background: #252540; }
+
+    #status {
+      margin-top: 8px;
+      font-size: 11px;
+      text-align: center;
+      min-height: 15px;
+    }
+    .ok  { color: #4cba82; }
+    .err { color: #e06060; }
+
+    /* ── Events section ── */
+    #eventsSection { display: none; }
+
+    .events-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    .events-header span { font-size: 10px; font-weight: 700; color: #7788aa; text-transform: uppercase; letter-spacing: .06em; }
+
+    .toggle-all {
+      font-size: 10px;
+      color: #f5a623;
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 0;
+      font-weight: 600;
+      flex: unset;
+    }
+    .toggle-all:hover { text-decoration: underline; }
+
+    #eventsList {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      max-height: 220px;
+      overflow-y: auto;
+      scrollbar-width: thin;
+      scrollbar-color: #2e2e50 transparent;
+    }
+
+    .event-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 9px;
+      background: #181830;
+      border: 1px solid #2a2a48;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background .15s, border-color .15s;
+    }
+    .event-row:hover { background: #1e1e3c; border-color: #3a3a60; }
+    .event-row.active { border-color: rgba(245,166,35,.5); background: rgba(245,166,35,.07); }
+
+    .event-row input[type="checkbox"] {
+      width: 14px;
+      height: 14px;
+      accent-color: #f5a623;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+
+    .event-game-img {
+      width: 22px;
+      height: 22px;
+      border-radius: 4px;
+      object-fit: cover;
+      flex-shrink: 0;
+    }
+    .event-game-placeholder {
+      width: 22px;
+      height: 22px;
+      border-radius: 4px;
+      background: #2a2a48;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      flex-shrink: 0;
+    }
+
+    .event-info { flex: 1; min-width: 0; }
+    .event-name {
+      font-size: 12px;
+      font-weight: 600;
+      color: #d0d0e8;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .event-game {
+      font-size: 10px;
+      color: #6677aa;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    #applyBtn {
+      width: 100%;
+      margin-top: 10px;
+      background: #f5a623;
+      color: #0d0d1c;
+      padding: 9px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    #applyBtn:hover { opacity: .88; }
+
+    #noEvents {
+      font-size: 11px;
+      color: #445;
+      text-align: center;
+      padding: 10px 0;
+    }
+
+    footer {
+      padding: 9px 16px;
+      font-size: 10px;
+      color: #334;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">🎮</div>
+  <div>
+    <h1>Multi-Event Tracker</h1>
+    <p>start.gg bracket extension</p>
+  </div>
+</header>
+
+<!-- Clé API -->
+<div class="section">
+  <label class="field-label" for="apiKey">Clé API start.gg</label>
+  <input type="text" id="apiKey" placeholder="Colle ta clé ici…" autocomplete="off" spellcheck="false" />
+  <p class="hint">
+    Génère un token sur
+    <a href="https://developer.start.gg/docs/authentication" target="_blank">developer.start.gg</a>
+    → Developer Settings
+  </p>
+  <div class="row-btns">
+    <button id="btnSave">💾 Sauvegarder</button>
+    <button id="btnClear">🗑 Effacer</button>
+  </div>
+  <div id="status"></div>
+</div>
+
+<!-- Filtre events -->
+<div class="section" id="eventsSection">
+  <div class="events-header">
+    <span>Events à surveiller</span>
+    <button class="toggle-all" id="toggleAll">Tout cocher</button>
+  </div>
+  <div id="eventsList"></div>
+  <div id="noEvents" style="display:none">Navigue vers un bracket pour voir les events.</div>
+  <button id="applyBtn">✅ Appliquer le filtre</button>
+</div>
+
+<footer>start.gg Multi-Event Tracker v2.0</footer>
+
+<script src="popup.js"></script>
+</body>
+</html>

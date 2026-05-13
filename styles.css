@@ -1,0 +1,79 @@
+/* ============================================================
+   start.gg Multi-Event Tracker — styles.css  v2
+   ============================================================ */
+
+.sgg-event-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 5px;
+  text-decoration: none;
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 1px 2px;
+  background: rgba(159, 90, 244, 0.12);
+  border: 1px solid rgba(159, 90, 244, 0.35);
+  transition: background 0.15s ease, transform 0.1s ease, border-color 0.15s;
+  vertical-align: middle;
+  line-height: 1;
+  position: relative;
+  font-size: 13px;
+}
+
+/* Image du jeu */
+.sgg-game-img {
+  display: block;
+  width: 18px;
+  height: 18px;
+  object-fit: cover;
+  border-radius: 3px;
+}
+
+.sgg-event-icon:hover {
+  background: rgba(159, 90, 244, 0.3);
+  border-color: rgba(159, 90, 244, 0.75);
+  transform: scale(1.18);
+}
+
+.sgg-event-icon:active {
+  transform: scale(0.95);
+}
+
+/* Tooltip custom via ::after */
+.sgg-event-icon::after {
+  content: attr(title);
+  position: absolute;
+  bottom: calc(100% + 7px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #111122;
+  color: #f0f0f0;
+  font-size: 11px;
+  font-family: system-ui, sans-serif;
+  font-weight: 500;
+  padding: 5px 10px;
+  border-radius: 6px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+  z-index: 99999;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(159, 90, 244, 0.25);
+}
+
+.sgg-event-icon:hover::after {
+  opacity: 1;
+}
+
+/* État de chargement au clic (résolution de la phase) */
+.sgg-event-icon.sgg-loading {
+  opacity: 0.45;
+  cursor: wait;
+  animation: sgg-pulse 0.7s ease-in-out infinite alternate;
+}
+
+@keyframes sgg-pulse {
+  from { opacity: 0.45; }
+  to   { opacity: 0.85; }
+}
