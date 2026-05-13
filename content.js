@@ -200,7 +200,10 @@ async function fetchPlayerPhaseUrl(rawTag, eventId, apiKey) {
   return best?.bracketUrl || null;
 }
 
-// ── Fabrique une icône ────────────────────────────────────────
+// ── Nombre max d'icônes visibles avant le badge "+" ─────────
+const MAX_VISIBLE_ICONS = 2;
+
+// ── Fabrique une icône individuelle ──────────────────────────
 function buildIcon(rawTag, { eventId, eventName, eventSlug, gameImageUrl, gameName }) {
   const a = document.createElement("a");
   a.className = "sgg-event-icon";
@@ -237,6 +240,113 @@ function buildIcon(rawTag, { eventId, eventName, eventSlug, gameImageUrl, gameNa
   }, true);
 
   return a;
+}
+
+// ── Ferme tous les popovers ouverts ──────────────────────────
+function closeAllPopovers() {
+  document.querySelectorAll(".sgg-popover").forEach((p) => p.remove());
+  document.querySelectorAll(".sgg-more-btn.open").forEach((b) => b.classList.remove("open"));
+}
+
+// ── Fabrique le badge "+N" avec popover ──────────────────────
+function buildMoreBadge(rawTag, hiddenEntries) {
+  const btn = document.createElement("button");
+  btn.className = "sgg-event-icon sgg-more-btn";
+  btn.textContent = `+${hiddenEntries.length}`;
+  btn.title = `${hiddenEntries.length} autre${hiddenEntries.length > 1 ? "s" : ""} event${hiddenEntries.length > 1 ? "s" : ""}`;
+
+  for (const evtType of ["mousedown", "mouseup", "pointerdown", "pointerup", "touchstart"]) {
+    btn.addEventListener(evtType, (e) => { e.stopPropagation(); e.stopImmediatePropagation(); }, true);
+  }
+
+  btn.addEventListener("click", (e) => {
+    e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
+
+    // Toggle : si déjà ouvert, ferme
+    const existing = document.querySelector(".sgg-popover");
+    if (existing && btn.classList.contains("open")) {
+      closeAllPopovers();
+      return;
+    }
+    closeAllPopovers();
+    btn.classList.add("open");
+
+    // Crée le popover
+    const popover = document.createElement("div");
+    popover.className = "sgg-popover";
+
+    for (const entry of hiddenEntries) {
+      const row = document.createElement("a");
+      row.className = "sgg-popover-row";
+      row.dataset.resolved = "0";
+      row.title = entry.eventName;
+      row.setAttribute("role", "button");
+
+      if (entry.gameImageUrl) {
+        const img = document.createElement("img");
+        img.src = entry.gameImageUrl; img.alt = entry.gameName || ""; img.className = "sgg-game-img";
+        row.appendChild(img);
+      } else {
+        const ico = document.createElement("span");
+        ico.textContent = "🎮"; ico.className = "sgg-popover-ico";
+        row.appendChild(ico);
+      }
+
+      const label = document.createElement("span");
+      label.className = "sgg-popover-label";
+      label.textContent = entry.eventName;
+      if (entry.gameName) {
+        const sub = document.createElement("span");
+        sub.className = "sgg-popover-sub";
+        sub.textContent = entry.gameName;
+        label.appendChild(document.createElement("br"));
+        label.appendChild(sub);
+      }
+      row.appendChild(label);
+
+      for (const evtType of ["mousedown", "mouseup", "pointerdown", "pointerup", "touchstart"]) {
+        row.addEventListener(evtType, (e) => { e.stopPropagation(); e.stopImmediatePropagation(); }, true);
+      }
+
+      row.addEventListener("click", async (e) => {
+        e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
+        if (row.dataset.resolved === "1") {
+          window.open(row.dataset.resolvedUrl, "_blank", "noopener");
+          closeAllPopovers();
+          return;
+        }
+        row.classList.add("sgg-loading");
+        const { apiKey } = await storageGet(["apiKey"]);
+        let finalUrl = `https://www.start.gg/${entry.eventSlug}`;
+        if (apiKey) {
+          try { const u = await fetchPlayerPhaseUrl(rawTag, entry.eventId, apiKey); if (u) finalUrl = u; }
+          catch (err) { console.warn("[startgg-tracker] Phase URL error:", err); }
+        }
+        row.dataset.resolved = "1"; row.dataset.resolvedUrl = finalUrl;
+        row.classList.remove("sgg-loading");
+        window.open(finalUrl, "_blank", "noopener");
+        closeAllPopovers();
+      }, true);
+
+      popover.appendChild(row);
+    }
+
+    // Téléporte dans le body pour échapper aux overflow:hidden parents
+    document.body.appendChild(popover);
+
+    // Positionne au-dessus du badge via getBoundingClientRect
+    const rect = btn.getBoundingClientRect();
+    popover.style.position = "fixed";
+    popover.style.bottom = `${window.innerHeight - rect.top + 8}px`;
+    popover.style.right  = `${window.innerWidth - rect.right}px`;
+
+    // Clic extérieur → ferme
+    setTimeout(() => {
+      document.addEventListener("click", closeAllPopovers, { once: true, capture: true });
+    }, 0);
+  }, true);
+
+  return btn;
 }
 
 // ── Injection ─────────────────────────────────────────────────
@@ -285,10 +395,22 @@ function injectIcons(playerEventMap) {
     parent.dataset.sggTracked = "1";
 
     const seenEvents = new Set();
+    const deduped = [];
     for (const entry of entries) {
       if (seenEvents.has(entry.eventId)) continue;
       seenEvents.add(entry.eventId);
+      deduped.push(entry);
+    }
+
+    // Icônes visibles (max MAX_VISIBLE_ICONS)
+    const visible = deduped.slice(0, MAX_VISIBLE_ICONS);
+    const hidden  = deduped.slice(MAX_VISIBLE_ICONS);
+
+    for (const entry of visible) {
       parent.appendChild(buildIcon(entry.rawTag, entry));
+    }
+    if (hidden.length > 0) {
+      parent.appendChild(buildMoreBadge(deduped[0].rawTag, hidden));
     }
   }
 }
