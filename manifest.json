@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "start.gg Multi-Event Tracker",
+  "name": "Multi-Events Tracker for start.gg",
   "version": "1.0",
-  "description": "Affiche une icône à côté des joueurs participant à plusieurs events sur start.gg",
+  "description": "Displays an icon next to the players participating in multiple events of a start.gg tournament",
   "permissions": [
     "storage",
     "tabs"
