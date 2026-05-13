@@ -1,26 +1,40 @@
 /* ============================================================
-   start.gg Multi-Event Tracker — styles.css  v2
+   start.gg Multi-Event Tracker — styles.css  v7
    ============================================================ */
 
 .sgg-event-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  margin-left: 5px;
+  /* Pousse l'icône à droite dans le flux inline, loin du pseudo */
+  margin-left: auto;
+  margin-right: 4px;
+  flex-shrink: 0;
   text-decoration: none;
   cursor: pointer;
   border-radius: 4px;
   padding: 1px 2px;
-  background: rgba(159, 90, 244, 0.12);
-  border: 1px solid rgba(159, 90, 244, 0.35);
+  background: rgba(255, 165, 0, 0.12);
+  border: 1px solid rgba(255, 165, 0, 0.35);
   transition: background 0.15s ease, transform 0.1s ease, border-color 0.15s;
   vertical-align: middle;
   line-height: 1;
   position: relative;
   font-size: 13px;
+  /* Empêche l'icône de rétrécir dans un container flex */
+  min-width: 22px;
+  min-height: 22px;
 }
 
-/* Image du jeu */
+/* Pour que margin-left:auto fonctionne, le parent doit être flex.
+   On force le parent du span nom à être flex s'il ne l'est pas déjà. */
+[class*="match-player-name-container"]:has(.sgg-event-icon),
+[class*="gamerTag"]:has(.sgg-event-icon) {
+  display: inline-flex !important;
+  align-items: center;
+  width: 100%;
+}
+
 .sgg-game-img {
   display: block;
   width: 18px;
@@ -30,16 +44,15 @@
 }
 
 .sgg-event-icon:hover {
-  background: rgba(159, 90, 244, 0.3);
-  border-color: rgba(159, 90, 244, 0.75);
+  background: rgba(255, 165, 0, 0.3);
+  border-color: rgba(255, 165, 0, 0.75);
   transform: scale(1.18);
+  z-index: 100;
 }
 
-.sgg-event-icon:active {
-  transform: scale(0.95);
-}
+.sgg-event-icon:active { transform: scale(0.95); }
 
-/* Tooltip custom via ::after */
+/* Tooltip */
 .sgg-event-icon::after {
   content: attr(title);
   position: absolute;
@@ -58,21 +71,17 @@
   opacity: 0;
   transition: opacity 0.18s ease;
   z-index: 99999;
-  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.5);
-  border: 1px solid rgba(159, 90, 244, 0.25);
+  box-shadow: 0 3px 10px rgba(0,0,0,0.5);
+  border: 1px solid rgba(255,165,0,0.25);
 }
+.sgg-event-icon:hover::after { opacity: 1; }
 
-.sgg-event-icon:hover::after {
-  opacity: 1;
-}
-
-/* État de chargement au clic (résolution de la phase) */
+/* Chargement */
 .sgg-event-icon.sgg-loading {
   opacity: 0.45;
   cursor: wait;
   animation: sgg-pulse 0.7s ease-in-out infinite alternate;
 }
-
 @keyframes sgg-pulse {
   from { opacity: 0.45; }
   to   { opacity: 0.85; }
