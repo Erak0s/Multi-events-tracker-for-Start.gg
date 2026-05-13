@@ -138,28 +138,41 @@ async function buildPlayerEventMap(tournamentSlug, currentEventSlug, enabledEven
 }
 
 // ── Fetch la PhaseGroup active du joueur ─────────────────────
+// Logique :
+//   1. Phase ACTIVE (state=2) la plus avancée dans le bracket
+//   2. Sinon phase CREATED (state=1) la plus avancée
+//   3. Sinon la phase terminée la plus avancée (tournoi fini)
+// "La plus avancée" = phaseOrder le plus élevé dans l'event.
 async function fetchPlayerPhaseUrl(rawTag, eventId, apiKey) {
-  const entrantQuery = `
-    query FindEntrant($eventId: ID!, $gamerTag: String!) {
+  // Requête 1 : entrant ID + ordre des phases de l'event
+  const combinedQuery = `
+    query FindEntrantAndPhases($eventId: ID!, $gamerTag: String!) {
       event(id: $eventId) {
+        phases { id phaseOrder }
         entrants(query: { filter: { name: $gamerTag }, page: 1, perPage: 5 }) {
           nodes { id participants { gamerTag } }
         }
       }
     }
   `;
-  const entrantData = await gqlQuery(entrantQuery, { eventId, gamerTag: rawTag }, apiKey);
-  const nodes = entrantData?.data?.event?.entrants?.nodes || [];
-  const entrant = nodes.find((n) =>
+  const combinedData = await gqlQuery(combinedQuery, { eventId, gamerTag: rawTag }, apiKey);
+  const event = combinedData?.data?.event;
+  if (!event) return null;
+
+  const phaseOrderMap = {};
+  for (const ph of event.phases || []) phaseOrderMap[String(ph.id)] = ph.phaseOrder ?? 0;
+
+  const entrant = (event.entrants?.nodes || []).find((n) =>
     n.participants?.some((p) => p.gamerTag.toLowerCase().trim() === rawTag.toLowerCase().trim())
   );
   if (!entrant) return null;
 
+  // Requête 2 : sets de l'entrant avec phaseGroup
   const setsQuery = `
     query EntrantSets($entrantId: ID!) {
       entrant(id: $entrantId) {
-        paginatedSets(page: 1, perPage: 30, sortType: RECENT) {
-          nodes { phaseGroup { id state bracketUrl phase { name } } }
+        paginatedSets(page: 1, perPage: 50, sortType: RECENT) {
+          nodes { phaseGroup { id state bracketUrl phase { id } } }
         }
       }
     }
@@ -168,14 +181,22 @@ async function fetchPlayerPhaseUrl(rawTag, eventId, apiKey) {
   const sets = setsData?.data?.entrant?.paginatedSets?.nodes || [];
   if (!sets.length) return null;
 
+  // Déduplique et enrichit avec phaseOrder
   const seen = new Set();
   const groups = [];
   for (const s of sets) {
     const pg = s.phaseGroup;
     if (!pg || seen.has(pg.id)) continue;
-    seen.add(pg.id); groups.push(pg);
+    seen.add(pg.id);
+    groups.push({ ...pg, order: phaseOrderMap[String(pg.phase?.id)] ?? 0 });
   }
-  const best = groups.find((g) => g.state === 2) || groups[0];
+
+  // Trie par phaseOrder décroissant (phase la plus avancée en premier)
+  groups.sort((a, b) => b.order - a.order);
+
+  const active  = groups.find((g) => g.state === 2); // ACTIVE
+  const created = groups.find((g) => g.state === 1); // CREATED (pas encore commencé)
+  const best = active || created || groups[0];        // fallback : plus avancée terminée
   return best?.bracketUrl || null;
 }
 

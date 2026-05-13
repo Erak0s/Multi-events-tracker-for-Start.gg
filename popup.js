@@ -1,52 +1,136 @@
-// popup.js v2 — Clé API + filtre par event
+// popup.js v3 — Clé API + filtre events + i18n FR/EN
 
-const apiKeyInput = document.getElementById("apiKey");
-const btnSave     = document.getElementById("btnSave");
-const btnClear    = document.getElementById("btnClear");
-const status      = document.getElementById("status");
-const eventsSection = document.getElementById("eventsSection");
-const eventsList  = document.getElementById("eventsList");
-const noEvents    = document.getElementById("noEvents");
-const toggleAllBtn = document.getElementById("toggleAll");
-const applyBtn    = document.getElementById("applyBtn");
+// ── Traductions ───────────────────────────────────────────────
+const I18N = {
+  fr: {
+    apiKeyLabel:      "Clé API start.gg",
+    apiKeyPlaceholder:"Colle ta clé ici…",
+    apiKeyHint:       `Génère un token sur <a href="https://developer.start.gg/docs/authentication" target="_blank">developer.start.gg</a> → Developer Settings`,
+    save:             "💾 Sauvegarder",
+    clear:            "🗑 Effacer",
+    eventsLabel:      "Events à surveiller",
+    checkAll:         "Tout cocher",
+    uncheckAll:       "Tout décocher",
+    noEvents:         "Navigue vers un bracket pour voir les events.",
+    apply:            "✅ Appliquer le filtre",
+    footer:           "start.gg Multi-Event Tracker v7",
+    statusSaved:      "✅ Clé sauvegardée !",
+    statusEmpty:      "⚠️ La clé est vide !",
+    statusCleared:    "🗑 Clé supprimée",
+    statusApplied:    "✅ Filtre appliqué !",
+  },
+  en: {
+    apiKeyLabel:      "start.gg API key",
+    apiKeyPlaceholder:"Paste your key here…",
+    apiKeyHint:       `Generate a token at <a href="https://developer.start.gg/docs/authentication" target="_blank">developer.start.gg</a> → Developer Settings`,
+    save:             "💾 Save",
+    clear:            "🗑 Clear",
+    eventsLabel:      "Events to track",
+    checkAll:         "Check all",
+    uncheckAll:       "Uncheck all",
+    noEvents:         "Navigate to a bracket to see events.",
+    apply:            "✅ Apply filter",
+    footer:           "a",
+    statusSaved:      "✅ Key saved!",
+    statusEmpty:      "⚠️ Key is empty!",
+    statusCleared:    "🗑 Key cleared",
+    statusApplied:    "✅ Filter applied!",
+  },
+};
 
-// ── Utils ────────────────────────────────────────────────────
-function setStatus(msg, type) {
-  status.textContent = msg;
-  status.className = type === "ok" ? "ok" : "err";
-  setTimeout(() => { status.textContent = ""; status.className = ""; }, 2500);
+// ── État langue ───────────────────────────────────────────────
+let currentLang = "fr";
+
+function t(key) { return I18N[currentLang][key] ?? I18N.fr[key] ?? key; }
+
+function applyTranslations() {
+  // Texte simple
+  document.querySelectorAll("[data-i18n]").forEach((el) => {
+    el.textContent = t(el.dataset.i18n);
+  });
+  // Liens dans les hints — construction DOM sécurisée (pas d'innerHTML)
+  document.querySelectorAll("[data-i18n-html]").forEach((el) => {
+    const key = el.dataset.i18nHtml;
+    // Les hints contiennent un lien vers developer.start.gg — on le construit manuellement
+    el.textContent = "";
+    if (key === "apiKeyHint") {
+      const pre  = currentLang === "fr" ? "Génère un token sur " : "Generate a token at ";
+      const post = currentLang === "fr" ? " → Developer Settings" : " → Developer Settings";
+      const a = document.createElement("a");
+      a.href = "https://developer.start.gg/docs/authentication";
+      a.target = "_blank";
+      a.textContent = "developer.start.gg";
+      el.appendChild(document.createTextNode(pre));
+      el.appendChild(a);
+      el.appendChild(document.createTextNode(post));
+    } else {
+      el.textContent = t(key);
+    }
+  });
+  // Placeholder
+  document.querySelectorAll("[data-i18n-placeholder]").forEach((el) => {
+    el.placeholder = t(el.dataset.i18nPlaceholder);
+  });
+  // Bouton toggle-all (texte dynamique)
+  updateToggleAllLabel();
 }
 
+// ── Storage ───────────────────────────────────────────────────
 function storageGet(keys) {
   return new Promise((r) => chrome.storage.local.get(keys, r));
 }
 
-// ── Clé API ──────────────────────────────────────────────────
-storageGet(["apiKey"]).then(({ apiKey }) => {
-  if (apiKey) apiKeyInput.value = apiKey;
-});
+// ── UI refs ───────────────────────────────────────────────────
+const apiKeyInput   = document.getElementById("apiKey");
+const btnSave       = document.getElementById("btnSave");
+const btnClear      = document.getElementById("btnClear");
+const status        = document.getElementById("status");
+const eventsSection = document.getElementById("eventsSection");
+const eventsList    = document.getElementById("eventsList");
+const noEvents      = document.getElementById("noEvents");
+const toggleAllBtn  = document.getElementById("toggleAll");
+const applyBtn      = document.getElementById("applyBtn");
+const btnFr         = document.getElementById("btnFr");
+const btnEn         = document.getElementById("btnEn");
 
+// ── Status helper ─────────────────────────────────────────────
+function setStatus(key, type) {
+  status.textContent = t(key);
+  status.className = type === "ok" ? "ok" : "err";
+  setTimeout(() => { status.textContent = ""; status.className = ""; }, 2500);
+}
+
+// ── Langue ────────────────────────────────────────────────────
+function setLang(lang) {
+  currentLang = lang;
+  btnFr.classList.toggle("active", lang === "fr");
+  btnEn.classList.toggle("active", lang === "en");
+  applyTranslations();
+  chrome.storage.local.set({ lang });
+}
+
+btnFr.addEventListener("click", () => setLang("fr"));
+btnEn.addEventListener("click", () => setLang("en"));
+
+// ── Clé API ───────────────────────────────────────────────────
 btnSave.addEventListener("click", () => {
   const key = apiKeyInput.value.trim();
-  if (!key) { setStatus("⚠️ La clé est vide !", "err"); return; }
-  chrome.storage.local.set({ apiKey: key }, () => setStatus("✅ Clé sauvegardée !", "ok"));
+  if (!key) { setStatus("statusEmpty", "err"); return; }
+  chrome.storage.local.set({ apiKey: key }, () => setStatus("statusSaved", "ok"));
 });
 
 btnClear.addEventListener("click", () => {
   chrome.storage.local.remove("apiKey", () => {
     apiKeyInput.value = "";
-    setStatus("🗑 Clé supprimée", "ok");
+    setStatus("statusCleared", "ok");
   });
 });
 
 apiKeyInput.addEventListener("keydown", (e) => { if (e.key === "Enter") btnSave.click(); });
 
-// ── Filtre events ────────────────────────────────────────────
+// ── Filtre events ─────────────────────────────────────────────
 async function loadEventsList() {
-  const { lastTournamentSlug, enabledEventIds } = await storageGet([
-    "lastTournamentSlug",
-    "enabledEventIds",
-  ]);
+  const { lastTournamentSlug, enabledEventIds } = await storageGet(["lastTournamentSlug", "enabledEventIds"]);
 
   if (!lastTournamentSlug) {
     eventsSection.style.display = "block";
@@ -56,11 +140,10 @@ async function loadEventsList() {
     return;
   }
 
-  const { [`events_${lastTournamentSlug}`]: events } = await storageGet([
-    `events_${lastTournamentSlug}`,
-  ]);
+  const result = await storageGet([`events_${lastTournamentSlug}`]);
+  const events = result[`events_${lastTournamentSlug}`];
 
-  if (!events || events.length === 0) {
+  if (!events?.length) {
     eventsSection.style.display = "block";
     noEvents.style.display = "block";
     eventsList.style.display = "none";
@@ -73,7 +156,6 @@ async function loadEventsList() {
   eventsList.style.display = "flex";
   applyBtn.style.display = "block";
 
-  // enabledEventIds null = tous actifs par défaut
   const activeSet = enabledEventIds
     ? new Set(enabledEventIds)
     : new Set(events.map((e) => e.id));
@@ -82,22 +164,18 @@ async function loadEventsList() {
 
   events.forEach((event) => {
     const isActive = activeSet.has(event.id);
-
     const row = document.createElement("label");
     row.className = "event-row" + (isActive ? " active" : "");
 
-    // Checkbox
     const cb = document.createElement("input");
     cb.type = "checkbox";
     cb.checked = isActive;
     cb.dataset.eventId = event.id;
-
     cb.addEventListener("change", () => {
       row.classList.toggle("active", cb.checked);
       updateToggleAllLabel();
     });
 
-    // Image du jeu
     let imgEl;
     if (event.gameImageUrl) {
       imgEl = document.createElement("img");
@@ -110,14 +188,12 @@ async function loadEventsList() {
       imgEl.textContent = "🎮";
     }
 
-    // Infos texte
     const info = document.createElement("div");
     info.className = "event-info";
 
     const name = document.createElement("div");
     name.className = "event-name";
     name.textContent = event.name;
-
     info.appendChild(name);
 
     if (event.gameName) {
@@ -138,8 +214,8 @@ async function loadEventsList() {
 
 function updateToggleAllLabel() {
   const boxes = eventsList.querySelectorAll("input[type='checkbox']");
-  const allChecked = [...boxes].every((b) => b.checked);
-  toggleAllBtn.textContent = allChecked ? "Tout décocher" : "Tout cocher";
+  const allChecked = boxes.length > 0 && [...boxes].every((b) => b.checked);
+  toggleAllBtn.textContent = allChecked ? t("uncheckAll") : t("checkAll");
 }
 
 toggleAllBtn.addEventListener("click", () => {
@@ -154,20 +230,26 @@ toggleAllBtn.addEventListener("click", () => {
 
 applyBtn.addEventListener("click", async () => {
   const boxes = eventsList.querySelectorAll("input[type='checkbox']");
-  const enabledEventIds = [...boxes]
-    .filter((b) => b.checked)
-    .map((b) => b.dataset.eventId);
-
+  const enabledEventIds = [...boxes].filter((b) => b.checked).map((b) => b.dataset.eventId);
   await new Promise((r) => chrome.storage.local.set({ enabledEventIds }, r));
-
-  // Demande au content script de se rafraîchir
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (tab?.id) {
-    chrome.tabs.sendMessage(tab.id, { type: "REFRESH_ICONS" });
-  }
-
-  setStatus("✅ Filtre appliqué !", "ok");
+  if (tab?.id) chrome.tabs.sendMessage(tab.id, { type: "REFRESH_ICONS" });
+  setStatus("statusApplied", "ok");
 });
 
-// ── Init ─────────────────────────────────────────────────────
-loadEventsList();
+// ── Init ──────────────────────────────────────────────────────
+async function init() {
+  const { apiKey, lang } = await storageGet(["apiKey", "lang"]);
+  if (apiKey) apiKeyInput.value = apiKey;
+
+  // Applique la langue sauvegardée (défaut : fr)
+  const savedLang = lang === "en" ? "en" : "fr";
+  btnFr.classList.toggle("active", savedLang === "fr");
+  btnEn.classList.toggle("active", savedLang === "en");
+  currentLang = savedLang;
+  applyTranslations();
+
+  await loadEventsList();
+}
+
+init();
