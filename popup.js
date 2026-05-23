@@ -130,9 +130,23 @@ apiKeyInput.addEventListener("keydown", (e) => { if (e.key === "Enter") btnSave.
 
 // ── Filtre events ─────────────────────────────────────────────
 async function loadEventsList() {
-  const { lastTournamentSlug, enabledEventIds } = await storageGet(["lastTournamentSlug", "enabledEventIds"]);
+  // Récupère le slug de la page active
+  let tournamentSlug = null;
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab?.id) {
+      const response = await chrome.tabs.sendMessage(tab.id, { type: "GET_TOURNAMENT_SLUG" }).catch(() => null);
+      tournamentSlug = response?.slug || null;
+    }
+  } catch (_) {}
 
-  if (!lastTournamentSlug) {
+  // Fallback sur le dernier slug connu
+  if (!tournamentSlug) {
+    const s = await storageGet(["lastTournamentSlug"]);
+    tournamentSlug = s.lastTournamentSlug || null;
+  }
+
+  if (!tournamentSlug) {
     eventsSection.style.display = "block";
     noEvents.style.display = "block";
     eventsList.style.display = "none";
@@ -140,8 +154,16 @@ async function loadEventsList() {
     return;
   }
 
-  const result = await storageGet([`events_${lastTournamentSlug}`]);
-  const events = result[`events_${lastTournamentSlug}`];
+  // Attend que les events soient disponibles (la map peut encore être en cours de build)
+  let events = null;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const result = await storageGet([`events_${tournamentSlug}`]);
+    events = result[`events_${tournamentSlug}`];
+    if (events?.length) break;
+    await new Promise(r => setTimeout(r, 800)); // attend 800ms entre chaque essai
+  }
+
+  const { enabledEventIds } = await storageGet(["enabledEventIds"]);
 
   if (!events?.length) {
     eventsSection.style.display = "block";
@@ -190,12 +212,10 @@ async function loadEventsList() {
 
     const info = document.createElement("div");
     info.className = "event-info";
-
     const name = document.createElement("div");
     name.className = "event-name";
     name.textContent = event.name;
     info.appendChild(name);
-
     if (event.gameName) {
       const game = document.createElement("div");
       game.className = "event-game";

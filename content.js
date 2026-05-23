@@ -4,6 +4,9 @@
 
 const API_URL = "https://api.start.gg/gql/alpha";
 
+// In-memory set of player names to highlight on next page load
+let pendingHighlights = new Set();
+
 function storageGet(keys) {
   return new Promise((r) => chrome.storage.local.get(keys, r));
 }
@@ -12,8 +15,7 @@ function getTournamentSlug() {
   return m ? m[1] : null;
 }
 function getCurrentEventSlug() {
-  // Gère /event/xxx et /event/xxx/brackets/...
-  const m = window.location.pathname.match(/\/event\/([^\/]+)/);
+  const m = window.location.pathname.match(/\/event[s]?\/([^\/]+)/);
   return m ? m[1] : null;
 }
 async function gqlQuery(query, variables, apiKey) {
@@ -79,7 +81,6 @@ async function fetchEventEntrants(eventId, apiKey) {
 async function buildPlayerEventMap(tournamentSlug, currentEventSlug, enabledEventIds, apiKey) {
   const allEvents = await fetchTournamentEvents(tournamentSlug, apiKey);
   const eventsForPopup = allEvents
-    .filter((e) => !e.slug.endsWith(`/${currentEventSlug}`))
     .map((e) => ({
       id: String(e.id),
       name: e.name,
@@ -93,10 +94,12 @@ async function buildPlayerEventMap(tournamentSlug, currentEventSlug, enabledEven
     lastTournamentSlug: tournamentSlug,
   });
 
+  chrome.runtime.sendMessage({ type: "EVENTS_UPDATED", slug: tournamentSlug }).catch(() => {});
+
   const activeIds = enabledEventIds ?? eventsForPopup.map((e) => e.id);
   const toProcess = eventsForPopup.filter((e) => activeIds.includes(e.id));
 
-  const map = {}; // clé (string lowercase) → [entry]
+  const map = {};
 
   function addEntry(key, entry) {
     const k = key.toLowerCase().trim();
@@ -116,12 +119,9 @@ async function buildPlayerEventMap(tournamentSlug, currentEventSlug, enabledEven
               eventId: event.id, eventName: event.name, eventSlug: event.slug,
               gameImageUrl: event.gameImageUrl, gameName: event.gameName, rawTag,
             };
-            // Clé 1 : tag complet
             addEntry(rawTag, entry);
-            // Clé 2 : partie après le dernier |
             const afterPipe = rawTag.split("|").pop().trim();
             addEntry(afterPipe, entry);
-            // Clé 3 : dernier mot du tag (après espace)
             const lastWord = afterPipe.split(/\s+/).pop();
             addEntry(lastWord, entry);
           }
@@ -138,19 +138,25 @@ async function buildPlayerEventMap(tournamentSlug, currentEventSlug, enabledEven
 }
 
 // ── Fetch la PhaseGroup active du joueur ─────────────────────
-// Logique :
-//   1. Phase ACTIVE (state=2) la plus avancée dans le bracket
-//   2. Sinon phase CREATED (state=1) la plus avancée
-//   3. Sinon la phase terminée la plus avancée (tournoi fini)
-// "La plus avancée" = phaseOrder le plus élevé dans l'event.
 async function fetchPlayerPhaseUrl(rawTag, eventId, apiKey) {
-  // Requête 1 : entrant ID + ordre des phases de l'event
   const combinedQuery = `
     query FindEntrantAndPhases($eventId: ID!, $gamerTag: String!) {
       event(id: $eventId) {
-        phases { id phaseOrder }
+        phases {
+          id phaseOrder
+          phaseGroups(query: { page: 1, perPage: 50 }) {
+            nodes { id state bracketUrl }
+          }
+        }
         entrants(query: { filter: { name: $gamerTag }, page: 1, perPage: 5 }) {
-          nodes { id participants { gamerTag } }
+          nodes {
+            id
+            participants { gamerTag }
+            seeds { phaseGroup { id } }
+            paginatedSets(page: 1, perPage: 1, sortType: RECENT) {
+              nodes { phaseGroup { id } }
+            }
+          }
         }
       }
     }
@@ -159,55 +165,97 @@ async function fetchPlayerPhaseUrl(rawTag, eventId, apiKey) {
   const event = combinedData?.data?.event;
   if (!event) return null;
 
-  const phaseOrderMap = {};
-  for (const ph of event.phases || []) phaseOrderMap[String(ph.id)] = ph.phaseOrder ?? 0;
-
   const entrant = (event.entrants?.nodes || []).find((n) =>
     n.participants?.some((p) => p.gamerTag.toLowerCase().trim() === rawTag.toLowerCase().trim())
   );
   if (!entrant) return null;
 
-  // Requête 2 : sets de l'entrant avec phaseGroup
-  const setsQuery = `
-    query EntrantSets($entrantId: ID!) {
-      entrant(id: $entrantId) {
-        paginatedSets(page: 1, perPage: 50, sortType: RECENT) {
-          nodes { phaseGroup { id state bracketUrl phase { id } } }
+  const pgMap = {};
+  for (const phase of event.phases || []) {
+    for (const pg of phase.phaseGroups?.nodes || []) {
+      pgMap[String(pg.id)] = { ...pg, phaseOrder: phase.phaseOrder ?? 0 };
+    }
+  }
+
+  // Prefer the phaseGroup from an actual set (mid/post-tournament)
+  const setPhaseGroupId = entrant.paginatedSets?.nodes?.[0]?.phaseGroup?.id;
+  if (setPhaseGroupId && pgMap[String(setPhaseGroupId)]) {
+    return pgMap[String(setPhaseGroupId)].bracketUrl || null;
+  }
+
+  // Fall back to the entrant's seed phaseGroup (pre-tournament, pools not started)
+  const seedPhaseGroupId = entrant.seeds?.[0]?.phaseGroup?.id;
+  if (seedPhaseGroupId && pgMap[String(seedPhaseGroupId)]) {
+    return pgMap[String(seedPhaseGroupId)].bracketUrl || null;
+  }
+
+  // Last resort: earliest phase group by phaseOrder
+  const groups = Object.values(pgMap).sort((a, b) => a.phaseOrder - b.phaseOrder);
+  const active  = groups.find((g) => g.state === 2);
+  const created = groups.find((g) => g.state === 1);
+  const best = active || created || groups[0];
+  return best?.bracketUrl || null;
+}
+
+// ── Highlight les joueurs en attente ─────────────────────────
+function applyPendingHighlights() {
+  if (!pendingHighlights.size) return;
+
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const tag = node.parentElement?.tagName?.toLowerCase();
+      if (!tag || ["script","style","input","textarea","select","button","noscript"].includes(tag))
+        return NodeFilter.FILTER_REJECT;
+      const t = node.textContent.trim();
+      if (!t || t.length < 2 || t.length > 80 || t.includes("\n"))
+        return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+
+  const nodes = [];
+  let n;
+  while ((n = walker.nextNode())) nodes.push(n);
+
+  for (const textNode of nodes) {
+    const text = textNode.textContent.trim().toLowerCase();
+    for (const tag of pendingHighlights) {
+      if (text === tag.toLowerCase()) {
+        const parent = textNode.parentElement;
+        if (parent && !parent.classList.contains("sgg-highlight")) {
+          parent.classList.add("sgg-highlight");
         }
       }
     }
-  `;
-  const setsData = await gqlQuery(setsQuery, { entrantId: entrant.id }, apiKey);
-  const sets = setsData?.data?.entrant?.paginatedSets?.nodes || [];
-  if (!sets.length) return null;
-
-  // Déduplique et enrichit avec phaseOrder
-  const seen = new Set();
-  const groups = [];
-  for (const s of sets) {
-    const pg = s.phaseGroup;
-    if (!pg || seen.has(pg.id)) continue;
-    seen.add(pg.id);
-    groups.push({ ...pg, order: phaseOrderMap[String(pg.phase?.id)] ?? 0 });
   }
 
-  // Trie par phaseOrder décroissant (phase la plus avancée en premier)
-  groups.sort((a, b) => b.order - a.order);
-
-  const active  = groups.find((g) => g.state === 2); // ACTIVE
-  const created = groups.find((g) => g.state === 1); // CREATED (pas encore commencé)
-  const best = active || created || groups[0];        // fallback : plus avancée terminée
-  return best?.bracketUrl || null;
+  // Clear after applying — one-shot highlight
+  pendingHighlights.clear();
 }
 
 // ── Nombre max d'icônes visibles avant le badge "+" ─────────
 const MAX_VISIBLE_ICONS = 2;
 
+// ── Ouvre un bracket et enregistre le joueur à highlighter ───
+async function openBracket(rawTag, eventId, eventSlug) {
+  const { apiKey } = await storageGet(["apiKey"]);
+  let finalUrl = `https://www.start.gg/${eventSlug}`;
+  if (apiKey) {
+    try { const u = await fetchPlayerPhaseUrl(rawTag, eventId, apiKey); if (u) finalUrl = u; }
+    catch (err) { console.warn("[startgg-tracker] Phase URL error:", err); }
+  }
+  // Store the player name so the new tab's content script can highlight it
+  const existing = await storageGet(["pendingHighlights"]);
+  const current = existing.pendingHighlights || [];
+  if (!current.includes(rawTag)) current.push(rawTag);
+  await new Promise((r) => chrome.storage.local.set({ pendingHighlights: current }, r));
+  window.open(finalUrl, "_blank", "noopener");
+}
+
 // ── Fabrique une icône individuelle ──────────────────────────
 function buildIcon(rawTag, { eventId, eventName, eventSlug, gameImageUrl, gameName }) {
   const a = document.createElement("a");
   a.className = "sgg-event-icon";
-  a.dataset.resolved = "0";
   a.title = `${eventName}${gameName ? ` · ${gameName}` : ""}`;
   a.setAttribute("role", "button");
   a.setAttribute("aria-label", `Voir le bracket ${eventName}`);
@@ -226,17 +274,9 @@ function buildIcon(rawTag, { eventId, eventName, eventSlug, gameImageUrl, gameNa
 
   a.addEventListener("click", async (e) => {
     e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
-    if (a.dataset.resolved === "1") { window.open(a.dataset.resolvedUrl, "_blank", "noopener"); return; }
     a.classList.add("sgg-loading");
-    const { apiKey } = await storageGet(["apiKey"]);
-    let finalUrl = `https://www.start.gg/${eventSlug}`;
-    if (apiKey) {
-      try { const u = await fetchPlayerPhaseUrl(rawTag, eventId, apiKey); if (u) finalUrl = u; }
-      catch (err) { console.warn("[startgg-tracker] Phase URL error:", err); }
-    }
-    a.dataset.resolved = "1"; a.dataset.resolvedUrl = finalUrl;
+    await openBracket(rawTag, eventId, eventSlug);
     a.classList.remove("sgg-loading");
-    window.open(finalUrl, "_blank", "noopener");
   }, true);
 
   return a;
@@ -262,7 +302,6 @@ function buildMoreBadge(rawTag, hiddenEntries) {
   btn.addEventListener("click", (e) => {
     e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
 
-    // Toggle : si déjà ouvert, ferme
     const existing = document.querySelector(".sgg-popover");
     if (existing && btn.classList.contains("open")) {
       closeAllPopovers();
@@ -271,14 +310,12 @@ function buildMoreBadge(rawTag, hiddenEntries) {
     closeAllPopovers();
     btn.classList.add("open");
 
-    // Crée le popover
     const popover = document.createElement("div");
     popover.className = "sgg-popover";
 
     for (const entry of hiddenEntries) {
       const row = document.createElement("a");
       row.className = "sgg-popover-row";
-      row.dataset.resolved = "0";
       row.title = entry.eventName;
       row.setAttribute("role", "button");
 
@@ -310,37 +347,22 @@ function buildMoreBadge(rawTag, hiddenEntries) {
 
       row.addEventListener("click", async (e) => {
         e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
-        if (row.dataset.resolved === "1") {
-          window.open(row.dataset.resolvedUrl, "_blank", "noopener");
-          closeAllPopovers();
-          return;
-        }
         row.classList.add("sgg-loading");
-        const { apiKey } = await storageGet(["apiKey"]);
-        let finalUrl = `https://www.start.gg/${entry.eventSlug}`;
-        if (apiKey) {
-          try { const u = await fetchPlayerPhaseUrl(rawTag, entry.eventId, apiKey); if (u) finalUrl = u; }
-          catch (err) { console.warn("[startgg-tracker] Phase URL error:", err); }
-        }
-        row.dataset.resolved = "1"; row.dataset.resolvedUrl = finalUrl;
+        await openBracket(rawTag, entry.eventId, entry.eventSlug);
         row.classList.remove("sgg-loading");
-        window.open(finalUrl, "_blank", "noopener");
         closeAllPopovers();
       }, true);
 
       popover.appendChild(row);
     }
 
-    // Téléporte dans le body pour échapper aux overflow:hidden parents
     document.body.appendChild(popover);
 
-    // Positionne au-dessus du badge via getBoundingClientRect
     const rect = btn.getBoundingClientRect();
     popover.style.position = "fixed";
     popover.style.bottom = `${window.innerHeight - rect.top + 8}px`;
     popover.style.right  = `${window.innerWidth - rect.right}px`;
 
-    // Clic extérieur → ferme
     setTimeout(() => {
       document.addEventListener("click", closeAllPopovers, { once: true, capture: true });
     }, 0);
@@ -350,21 +372,14 @@ function buildMoreBadge(rawTag, hiddenEntries) {
 }
 
 // ── Injection ─────────────────────────────────────────────────
-// Stratégie : scan de TOUS les nœuds texte courts du DOM.
-// C'est le seul moyen fiable car start.gg change ses classes CSS à chaque déploiement.
-// On évite de marquer les éléments parents — on marque le nœud texte lui-même
-// avec un attribut sur le parent, et on ré-injecte si le parent a été recréé par React.
-
 function injectIcons(playerEventMap) {
   if (!playerEventMap || !Object.keys(playerEventMap).length) return;
 
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
-      // Ignore nœuds dans des éléments non-visibles ou fonctionnels
       const tag = node.parentElement?.tagName?.toLowerCase();
-      if (!tag || ["script","style","input","textarea","select","button","noscript"].includes(tag)) 
+      if (!tag || ["script","style","input","textarea","select","button","noscript"].includes(tag))
         return NodeFilter.FILTER_REJECT;
-      // Ignore les icônes déjà injectées
       if (node.parentElement?.classList?.contains("sgg-event-icon"))
         return NodeFilter.FILTER_REJECT;
       const t = node.textContent.trim();
@@ -382,8 +397,6 @@ function injectIcons(playerEventMap) {
     const parent = textNode.parentElement;
     if (!parent) continue;
 
-    // Vérifie si cet élément a déjà des icônes injectées pour ce même texte
-    // (évite les doublons sans bloquer la ré-injection si React recrée le nœud)
     const existingIcons = parent.querySelectorAll(".sgg-event-icon");
     if (existingIcons.length > 0) continue;
 
@@ -391,18 +404,20 @@ function injectIcons(playerEventMap) {
     const entries = playerEventMap[text];
     if (!entries?.length) continue;
 
-    // Marque l'élément pour ne pas le retraiter dans cette passe
+    const currentPath = window.location.pathname.replace("/events/", "/event/");
+    const filtered = entries.filter(e => !currentPath.includes(e.eventSlug));
+    if (!filtered.length) continue;
+
     parent.dataset.sggTracked = "1";
 
     const seenEvents = new Set();
     const deduped = [];
-    for (const entry of entries) {
+    for (const entry of filtered) {
       if (seenEvents.has(entry.eventId)) continue;
       seenEvents.add(entry.eventId);
       deduped.push(entry);
     }
 
-    // Icônes visibles (max MAX_VISIBLE_ICONS)
     const visible = deduped.slice(0, MAX_VISIBLE_ICONS);
     const hidden  = deduped.slice(MAX_VISIBLE_ICONS);
 
@@ -423,17 +438,23 @@ function clearIcons() {
   });
 }
 
-chrome.runtime.onMessage.addListener((msg) => {
-  if (msg.type === "REFRESH_ICONS") { playerEventMapCache = null; clearIcons(); run(); }
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.type === "REFRESH_ICONS") {
+    playerEventMapCache = null;
+    clearIcons();
+    run();
+    return false;
+  }
+  if (msg.type === "GET_TOURNAMENT_SLUG") {
+    sendResponse({ slug: getTournamentSlug() });
+    return false;
+  }
 });
 
 // ── Observer DOM robuste ──────────────────────────────────────
-// Relance injectIcons dès que React modifie le DOM, sans rebuild de la map.
-// Utilise un debounce court pour grouper les mutations rapides.
 let debounce;
 function observeDOM() {
   const observer = new MutationObserver((mutations) => {
-    // Ignore les mutations causées par nos propres injections
     const onlyOurChanges = mutations.every(m =>
       [...m.addedNodes].every(node =>
         node.nodeType === 1 && node.classList?.contains("sgg-event-icon")
@@ -443,7 +464,10 @@ function observeDOM() {
 
     clearTimeout(debounce);
     debounce = setTimeout(() => {
-      if (playerEventMapCache) injectIcons(playerEventMapCache);
+      if (playerEventMapCache) {
+        injectIcons(playerEventMapCache);
+        applyPendingHighlights();
+      }
     }, 300);
   });
   observer.observe(document.body, { childList: true, subtree: true });
@@ -456,12 +480,19 @@ async function run() {
   if (pending) return;
   pending = true;
   try {
-    const { apiKey, enabledEventIds } = await storageGet(["apiKey", "enabledEventIds"]);
+    const { apiKey, enabledEventIds, pendingHighlights: storedHighlights } = await storageGet(["apiKey", "enabledEventIds", "pendingHighlights"]);
     if (!apiKey) return;
 
+    // Load pending highlights from storage into memory and clear storage
+    if (storedHighlights?.length) {
+      for (const tag of storedHighlights) pendingHighlights.add(tag);
+      chrome.storage.local.remove("pendingHighlights");
+    }
+
     const tournamentSlug = getTournamentSlug();
+    if (!tournamentSlug) return;
+
     const currentEventSlug = getCurrentEventSlug();
-    if (!tournamentSlug || !currentEventSlug) return;
 
     if (!playerEventMapCache) {
       playerEventMapCache = await buildPlayerEventMap(
@@ -469,12 +500,18 @@ async function run() {
       );
     }
     injectIcons(playerEventMapCache);
+    applyPendingHighlights();
   } catch (e) {
     console.error("[startgg-tracker]", e);
   } finally {
     pending = false;
   }
 }
+
+// ── Inject highlight style ────────────────────────────────────
+const style = document.createElement("style");
+style.textContent = `.sgg-highlight { background-color: rgba(168, 85, 247, 0.25) !important; border-radius: 3px; padding: 0 2px; }`;
+document.head.appendChild(style);
 
 run();
 observeDOM();
