@@ -165,11 +165,6 @@ async function fetchPlayerPhaseUrl(rawTag, eventId, apiKey) {
   const event = combinedData?.data?.event;
   if (!event) return null;
 
-  const entrant = (event.entrants?.nodes || []).find((n) =>
-    n.participants?.some((p) => p.gamerTag.toLowerCase().trim() === rawTag.toLowerCase().trim())
-  );
-  if (!entrant) return null;
-
   const pgMap = {};
   for (const phase of event.phases || []) {
     for (const pg of phase.phaseGroups?.nodes || []) {
@@ -177,19 +172,57 @@ async function fetchPlayerPhaseUrl(rawTag, eventId, apiKey) {
     }
   }
 
-  // Prefer the phaseGroup from an actual set (mid/post-tournament)
+  let entrant = (event.entrants?.nodes || []).find((n) =>
+    n.participants?.some((p) => p.gamerTag.toLowerCase().trim() === rawTag.toLowerCase().trim())
+  );
+
+  // Fallback for team events: paginate all entrants and scan participants
+  if (!entrant) {
+    const teamQuery = `
+      query TeamEntrants($eventId: ID!, $page: Int!) {
+        event(id: $eventId) {
+          entrants(query: { page: $page, perPage: 50 }) {
+            pageInfo { totalPages }
+            nodes {
+              id
+              participants { gamerTag }
+              seeds { phaseGroup { id } }
+              paginatedSets(page: 1, perPage: 1, sortType: RECENT) {
+                nodes { phaseGroup { id } }
+              }
+            }
+          }
+        }
+      }
+    `;
+    let page = 1, totalPages = 1;
+    outer: while (page <= totalPages) {
+      const data = await gqlQuery(teamQuery, { eventId, page }, apiKey);
+      const d = data?.data?.event?.entrants;
+      if (!d) break;
+      totalPages = d.pageInfo?.totalPages || 1;
+      for (const node of d.nodes || []) {
+        if (node.participants?.some((p) => p.gamerTag.toLowerCase().trim() === rawTag.toLowerCase().trim())) {
+          entrant = node;
+          break outer;
+        }
+      }
+      page++;
+    }
+  }
+
+  if (!entrant) return null;
+
   const setPhaseGroupId = entrant.paginatedSets?.nodes?.[0]?.phaseGroup?.id;
   if (setPhaseGroupId && pgMap[String(setPhaseGroupId)]) {
     return pgMap[String(setPhaseGroupId)].bracketUrl || null;
   }
 
-  // Fall back to the entrant's seed phaseGroup (pre-tournament, pools not started)
   const seedPhaseGroupId = entrant.seeds?.[0]?.phaseGroup?.id;
   if (seedPhaseGroupId && pgMap[String(seedPhaseGroupId)]) {
     return pgMap[String(seedPhaseGroupId)].bracketUrl || null;
   }
 
-  // Last resort: earliest phase group by phaseOrder
   const groups = Object.values(pgMap).sort((a, b) => a.phaseOrder - b.phaseOrder);
   const active  = groups.find((g) => g.state === 2);
   const created = groups.find((g) => g.state === 1);
