@@ -138,6 +138,9 @@ async function buildPlayerEventMap(tournamentSlug, currentEventSlug, enabledEven
 }
 
 // ── Fetch la PhaseGroup active du joueur ─────────────────────
+// Returns { url, teamName } — teamName is null for solo events,
+// set to the entrant's team name for team events so the new tab
+// can highlight the right row.
 async function fetchPlayerPhaseUrl(rawTag, eventId, apiKey) {
   const combinedQuery = `
     query FindEntrantAndPhases($eventId: ID!, $gamerTag: String!) {
@@ -150,7 +153,7 @@ async function fetchPlayerPhaseUrl(rawTag, eventId, apiKey) {
         }
         entrants(query: { filter: { name: $gamerTag }, page: 1, perPage: 5 }) {
           nodes {
-            id
+            id name
             participants { gamerTag }
             seeds { phaseGroup { id } }
             paginatedSets(page: 1, perPage: 1, sortType: RECENT) {
@@ -184,7 +187,7 @@ async function fetchPlayerPhaseUrl(rawTag, eventId, apiKey) {
           entrants(query: { page: $page, perPage: 50 }) {
             pageInfo { totalPages }
             nodes {
-              id
+              id name
               participants { gamerTag }
               seeds { phaseGroup { id } }
               paginatedSets(page: 1, perPage: 1, sortType: RECENT) {
@@ -213,21 +216,29 @@ async function fetchPlayerPhaseUrl(rawTag, eventId, apiKey) {
 
   if (!entrant) return null;
 
+  // teamName is the entrant name for team events (e.g. "Gohurisson / Partner"),
+  // which differs from rawTag only in team events.
+  const teamName = entrant.name && entrant.name.toLowerCase() !== rawTag.toLowerCase()
+    ? entrant.name
+    : null;
+
+  const resolveUrl = (pgId) => pgMap[String(pgId)]?.bracketUrl || null;
+
   const setPhaseGroupId = entrant.paginatedSets?.nodes?.[0]?.phaseGroup?.id;
   if (setPhaseGroupId && pgMap[String(setPhaseGroupId)]) {
-    return pgMap[String(setPhaseGroupId)].bracketUrl || null;
+    return { url: resolveUrl(setPhaseGroupId), teamName };
   }
 
   const seedPhaseGroupId = entrant.seeds?.[0]?.phaseGroup?.id;
   if (seedPhaseGroupId && pgMap[String(seedPhaseGroupId)]) {
-    return pgMap[String(seedPhaseGroupId)].bracketUrl || null;
+    return { url: resolveUrl(seedPhaseGroupId), teamName };
   }
 
   const groups = Object.values(pgMap).sort((a, b) => a.phaseOrder - b.phaseOrder);
   const active  = groups.find((g) => g.state === 2);
   const created = groups.find((g) => g.state === 1);
   const best = active || created || groups[0];
-  return best?.bracketUrl || null;
+  return { url: best?.bracketUrl || null, teamName };
 }
 
 // ── Highlight les joueurs en attente ─────────────────────────
@@ -253,7 +264,8 @@ function applyPendingHighlights() {
   for (const textNode of nodes) {
     const text = textNode.textContent.trim().toLowerCase();
     for (const tag of pendingHighlights) {
-      if (text === tag.toLowerCase()) {
+      // Exact match for solo events; partial match for team names
+      if (text === tag.toLowerCase() || text.includes(tag.toLowerCase())) {
         const parent = textNode.parentElement;
         if (parent && !parent.classList.contains("sgg-highlight")) {
           parent.classList.add("sgg-highlight");
@@ -273,14 +285,24 @@ const MAX_VISIBLE_ICONS = 2;
 async function openBracket(rawTag, eventId, eventSlug) {
   const { apiKey } = await storageGet(["apiKey"]);
   let finalUrl = `https://www.start.gg/${eventSlug}`;
+  const toHighlight = [rawTag]; // always highlight by rawTag
+
   if (apiKey) {
-    try { const u = await fetchPlayerPhaseUrl(rawTag, eventId, apiKey); if (u) finalUrl = u; }
-    catch (err) { console.warn("[startgg-tracker] Phase URL error:", err); }
+    try {
+      const result = await fetchPlayerPhaseUrl(rawTag, eventId, apiKey);
+      if (result?.url) finalUrl = result.url;
+      // Also highlight by team name if present (team events)
+      if (result?.teamName) toHighlight.push(result.teamName);
+    } catch (err) {
+      console.warn("[startgg-tracker] Phase URL error:", err);
+    }
   }
-  // Store the player name so the new tab's content script can highlight it
+
   const existing = await storageGet(["pendingHighlights"]);
   const current = existing.pendingHighlights || [];
-  if (!current.includes(rawTag)) current.push(rawTag);
+  for (const tag of toHighlight) {
+    if (!current.includes(tag)) current.push(tag);
+  }
   await new Promise((r) => chrome.storage.local.set({ pendingHighlights: current }, r));
   window.open(finalUrl, "_blank", "noopener");
 }
