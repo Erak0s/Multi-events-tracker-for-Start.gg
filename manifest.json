@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "start.gg Multi-Event Tracker",
-  "version": "1.3.4",
+  "version": "1.4.0",
   "description": "Displays an icon next to the players participating in multiple events of a start.gg tournament",
   "browser_specific_settings": {
     "gecko": {
@@ -15,7 +15,7 @@
   },
   "permissions": [
     "storage",
-    "tabs"
+    "activeTab"
   ],
   "host_permissions": [
     "https://www.start.gg/*",
