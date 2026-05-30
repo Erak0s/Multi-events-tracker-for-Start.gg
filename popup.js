@@ -1,4 +1,4 @@
-// popup.js v3 — Clé API + filtre events + i18n FR/EN
+// popup.js v4 — Clé API + filtre events + i18n FR/EN
 
 // ── Traductions ───────────────────────────────────────────────
 const I18N = {
@@ -11,13 +11,19 @@ const I18N = {
     eventsLabel:      "Events à surveiller",
     checkAll:         "Tout cocher",
     uncheckAll:       "Tout décocher",
-    noEvents:         "Navigue vers un bracket pour voir les events.",
+    noEvents:         "Clique sur le bouton Tracker dans la page pour charger les events.",
     apply:            "✅ Appliquer le filtre",
     footer:           "",
     statusSaved:      "✅ Clé sauvegardée !",
     statusEmpty:      "⚠️ La clé est vide !",
     statusCleared:    "🗑 Clé supprimée",
     statusApplied:    "✅ Filtre appliqué !",
+    trackerBtn:       "Lancer le Tracker",
+    trackerLoading:   "Chargement…",
+    trackerDone:      "Chargé ✓",
+    trackerError:     "Erreur",
+    trackerCooldown:  "Patiente…",
+    trackerNoKey:     "⚠️ Clé API manquante",
   },
   en: {
     apiKeyLabel:      "start.gg API key",
@@ -28,13 +34,19 @@ const I18N = {
     eventsLabel:      "Events to track",
     checkAll:         "Check all",
     uncheckAll:       "Uncheck all",
-    noEvents:         "Navigate to a bracket to see events.",
+    noEvents:         "Click the Tracker button on the page to load events.",
     apply:            "✅ Apply filter",
     footer:           "",
     statusSaved:      "✅ Key saved!",
     statusEmpty:      "⚠️ Key is empty!",
     statusCleared:    "🗑 Key cleared",
     statusApplied:    "✅ Filter applied!",
+    trackerBtn:       "Launch Tracker",
+    trackerLoading:   "Loading…",
+    trackerDone:      "Loaded ✓",
+    trackerError:     "Error",
+    trackerCooldown:  "Please wait…",
+    trackerNoKey:     "⚠️ API key missing",
   },
 };
 
@@ -44,18 +56,15 @@ let currentLang = "fr";
 function t(key) { return I18N[currentLang][key] ?? I18N.fr[key] ?? key; }
 
 function applyTranslations() {
-  // Texte simple
   document.querySelectorAll("[data-i18n]").forEach((el) => {
     el.textContent = t(el.dataset.i18n);
   });
-  // Liens dans les hints — construction DOM sécurisée (pas d'innerHTML)
   document.querySelectorAll("[data-i18n-html]").forEach((el) => {
     const key = el.dataset.i18nHtml;
-    // Les hints contiennent un lien vers developer.start.gg — on le construit manuellement
     el.textContent = "";
     if (key === "apiKeyHint") {
       const pre  = currentLang === "fr" ? "Génère un token sur " : "Generate a token at ";
-      const post = currentLang === "fr" ? " → Developer Settings" : " → Developer Settings";
+      const post = " → Developer Settings";
       const a = document.createElement("a");
       a.href = "https://developer.start.gg/docs/authentication";
       a.target = "_blank";
@@ -67,11 +76,9 @@ function applyTranslations() {
       el.textContent = t(key);
     }
   });
-  // Placeholder
   document.querySelectorAll("[data-i18n-placeholder]").forEach((el) => {
     el.placeholder = t(el.dataset.i18nPlaceholder);
   });
-  // Bouton toggle-all (texte dynamique)
   updateToggleAllLabel();
 }
 
@@ -154,16 +161,12 @@ async function loadEventsList() {
     return;
   }
 
-  // Attend que les events soient disponibles (la map peut encore être en cours de build)
-  let events = null;
-  for (let attempt = 0; attempt < 10; attempt++) {
-    const result = await storageGet([`events_${tournamentSlug}`]);
-    events = result[`events_${tournamentSlug}`];
-    if (events?.length) break;
-    await new Promise(r => setTimeout(r, 800)); // attend 800ms entre chaque essai
-  }
-
-  const { enabledEventIds } = await storageGet(["enabledEventIds"]);
+  // Lecture directe du storage — pas de boucle d'attente :
+  // la map n'est construite que sur clic du bouton Tracker,
+  // donc les events peuvent légitimement ne pas encore exister.
+  const result = await storageGet([`events_${tournamentSlug}`, "enabledEventIds"]);
+  const events = result[`events_${tournamentSlug}`];
+  const { enabledEventIds } = result;
 
   if (!events?.length) {
     eventsSection.style.display = "block";
@@ -257,12 +260,109 @@ applyBtn.addEventListener("click", async () => {
   setStatus("statusApplied", "ok");
 });
 
+// ── Tracker button ───────────────────────────────────────────
+const trackerSection = document.getElementById("trackerSection");
+const trackerBtn     = document.getElementById("trackerBtn");
+const trackerBtnLabel = document.getElementById("trackerBtnLabel");
+const trackerStatus  = document.getElementById("trackerStatus");
+
+let trackerLastRunAt = 0;
+const TRACKER_COOLDOWN_MS = 5000;
+
+function setTrackerState(state) {
+  trackerBtn.classList.remove("sgg-loading-state", "sgg-done-state", "sgg-error-state", "sgg-cooldown-state");
+  trackerStatus.textContent = "";
+
+  if (state === "loading") {
+    trackerBtn.classList.add("sgg-loading-state");
+    trackerBtnLabel.textContent = t("trackerLoading");
+  } else if (state === "done") {
+    trackerBtn.classList.add("sgg-done-state");
+    trackerBtnLabel.textContent = t("trackerDone");
+    setTimeout(() => {
+      trackerBtn.classList.remove("sgg-done-state");
+      trackerBtnLabel.textContent = t("trackerBtn");
+    }, 3000);
+  } else if (state === "error") {
+    trackerBtn.classList.add("sgg-error-state");
+    trackerBtnLabel.textContent = t("trackerError");
+    setTimeout(() => {
+      trackerBtn.classList.remove("sgg-error-state");
+      trackerBtnLabel.textContent = t("trackerBtn");
+    }, 4000);
+  } else if (state === "cooldown") {
+    trackerBtn.classList.add("sgg-cooldown-state");
+    setTimeout(() => {
+      trackerBtn.classList.remove("sgg-cooldown-state");
+      trackerBtnLabel.textContent = t("trackerBtn");
+    }, 1500);
+  } else {
+    trackerBtnLabel.textContent = t("trackerBtn");
+  }
+}
+
+// Écoute les messages de progression venant du content script
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg.type === "TRACKER_STATE") {
+    if (msg.state === "loading") {
+      setTrackerState("loading");
+      if (msg.text) trackerBtnLabel.textContent = msg.text;
+    } else {
+      setTrackerState(msg.state);
+    }
+  }
+});
+
+trackerBtn.addEventListener("click", async () => {
+  if (trackerBtn.classList.contains("sgg-loading-state")) return;
+
+  const elapsed = Date.now() - trackerLastRunAt;
+  if (trackerLastRunAt > 0 && elapsed < TRACKER_COOLDOWN_MS) {
+    const remaining = Math.ceil((TRACKER_COOLDOWN_MS - elapsed) / 1000);
+    trackerBtnLabel.textContent = `${t("trackerCooldown")} (${remaining}s)`;
+    setTrackerState("cooldown");
+    return;
+  }
+
+  const { apiKey } = await storageGet(["apiKey"]);
+  if (!apiKey) {
+    trackerStatus.textContent = t("trackerNoKey");
+    trackerStatus.style.color = "var(--accent)";
+    return;
+  }
+
+  setTrackerState("loading");
+  trackerLastRunAt = Date.now();
+
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (tab?.id) {
+    chrome.tabs.sendMessage(tab.id, { type: "REFRESH_ICONS" });
+  }
+});
+
+async function loadTrackerSection() {
+  let tournamentSlug = null;
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab?.id) {
+      const response = await chrome.tabs.sendMessage(tab.id, { type: "GET_TOURNAMENT_SLUG" }).catch(() => null);
+      tournamentSlug = response?.slug || null;
+    }
+  } catch (_) {}
+  if (!tournamentSlug) {
+    const s = await storageGet(["lastTournamentSlug"]);
+    tournamentSlug = s.lastTournamentSlug || null;
+  }
+  if (tournamentSlug) {
+    trackerSection.style.display = "block";
+  }
+}
+
 // ── Init ──────────────────────────────────────────────────────
 async function init() {
   const { apiKey, lang } = await storageGet(["apiKey", "lang"]);
   if (apiKey) apiKeyInput.value = apiKey;
 
-  // Applique la langue sauvegardée (défaut : fr)
   const savedLang = lang === "en" ? "en" : "fr";
   btnFr.classList.toggle("active", savedLang === "fr");
   btnEn.classList.toggle("active", savedLang === "en");
@@ -270,6 +370,7 @@ async function init() {
   applyTranslations();
 
   await loadEventsList();
+  await loadTrackerSection();
 }
 
 init();

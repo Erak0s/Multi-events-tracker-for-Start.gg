@@ -1,12 +1,11 @@
 /* ============================================================
-   start.gg Multi-Event Tracker — styles.css  v7
+   start.gg Multi-Event Tracker — styles.css  v8
    ============================================================ */
 
 .sgg-event-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  /* Pousse l'icône à droite dans le flux inline, loin du pseudo */
   margin-left: 0;
   margin-right: 0;
   flex-shrink: 0;
@@ -21,7 +20,6 @@
   line-height: 1;
   position: relative;
   font-size: 13px;
-  /* Empêche l'icône de rétrécir dans un container flex */
   min-width: 22px;
   min-height: 22px;
 }
@@ -30,8 +28,6 @@ a.sgg-event-icon:first-of-type {
   margin-left: auto;
 }
 
-/* Pour que margin-left:auto fonctionne, le parent doit être flex.
-   On force le parent du span nom à être flex s'il ne l'est pas déjà. */
 [class*="match-player-name-container"]:has(.sgg-event-icon),
 [class*="gamerTag"]:has(.sgg-event-icon) {
   display: inline-flex !important;
@@ -76,11 +72,11 @@ a.sgg-event-icon:first-of-type {
   transition: opacity 0.18s ease;
   z-index: 99999;
   box-shadow: 0 3px 10px rgba(0,0,0,0.5);
-  border: 1px solid rgba(159, 90, 244,0.25);
+  border: 1px solid rgba(159, 90, 244, 0.25);
 }
 .sgg-event-icon:hover::after { opacity: 1; }
 
-/* Chargement */
+/* Chargement icône individuelle */
 .sgg-event-icon.sgg-loading {
   opacity: 0.45;
   cursor: wait;
@@ -124,7 +120,6 @@ a.sgg-event-icon:first-of-type {
   min-width: 180px;
   max-width: 260px;
   z-index: 999999;
-  /* Évite que le popover soit clippé par un overflow:hidden parent */
 }
 
 .sgg-popover-row {
@@ -172,4 +167,11 @@ a.sgg-event-icon:first-of-type {
 .sgg-popover-row.sgg-loading {
   opacity: 0.5;
   cursor: wait;
+}
+
+/* ── Highlight joueur ────────────────────────────────────────── */
+.sgg-highlight {
+  background-color: rgba(168, 85, 247, 0.25) !important;
+  border-radius: 3px;
+  padding: 0 2px;
 }
