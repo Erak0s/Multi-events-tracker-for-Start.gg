@@ -1,5 +1,6 @@
 // ============================================================
-//  start.gg Multi-Event Tracker — content.js  v7
+//  start.gg Multi-Event Tracker — content.js  v8c
+//  Approche : copie du pseudo dans le presse-papier + navigation vers /brackets
 // ============================================================
 
 const API_URL = "https://api.start.gg/gql/alpha";
@@ -26,6 +27,36 @@ async function gqlQuery(query, variables, apiKey) {
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
+}
+
+// ── Normalisation des tags ────────────────────────────────────
+// Gère les espaces unicode, NFKC (caractères japonais, etc.), casse
+function normalizeTag(tag) {
+  return tag
+    .normalize("NFKC")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+// Génère toutes les clés de lookup pour un rawTag donné :
+//   "Solary | Gluto"  → ["solary | gluto", "gluto", "solary"]
+//   "ZETA | あcola"   → ["zeta | あcola", "あcola", "zeta"]
+//   "Liquid"          → ["liquid"]
+function tagKeys(rawTag) {
+  const full = normalizeTag(rawTag);
+  const keys = new Set([full]);
+
+  const parts = rawTag.split("|").map((p) => normalizeTag(p)).filter((p) => p.length >= 2);
+  // après le pipe = pseudo du joueur ; avant le pipe = tag d'équipe
+  for (const p of parts) {
+    keys.add(p);
+    // dernier "mot" du segment (ex : "gluto" depuis "gluto")
+    const lastWord = p.split(/\s+/).pop();
+    if (lastWord && lastWord.length >= 2) keys.add(lastWord);
+  }
+
+  return [...keys];
 }
 
 // ── Fetch events + image du jeu ──────────────────────────────
@@ -78,7 +109,8 @@ async function fetchEventEntrants(eventId, apiKey) {
 }
 
 // ── Construit la map ──────────────────────────────────────────
-async function buildPlayerEventMap(tournamentSlug, currentEventSlug, enabledEventIds, apiKey) {
+// onProgress(loaded, total) est appelé après chaque event traité
+async function buildPlayerEventMap(tournamentSlug, currentEventSlug, enabledEventIds, apiKey, onProgress) {
   const allEvents = await fetchTournamentEvents(tournamentSlug, apiKey);
   const eventsForPopup = allEvents
     .map((e) => ({
@@ -100,9 +132,10 @@ async function buildPlayerEventMap(tournamentSlug, currentEventSlug, enabledEven
   const toProcess = eventsForPopup.filter((e) => activeIds.includes(e.id));
 
   const map = {};
+  let loaded = 0;
 
   function addEntry(key, entry) {
-    const k = key.toLowerCase().trim();
+    const k = normalizeTag(key);
     if (!k || k.length < 2) return;
     if (!map[k]) map[k] = [];
     if (!map[k].some(e => e.rawTag === entry.rawTag && e.eventId === entry.eventId))
@@ -119,21 +152,22 @@ async function buildPlayerEventMap(tournamentSlug, currentEventSlug, enabledEven
               eventId: event.id, eventName: event.name, eventSlug: event.slug,
               gameImageUrl: event.gameImageUrl, gameName: event.gameName, rawTag,
             };
-            addEntry(rawTag, entry);
-            const afterPipe = rawTag.split("|").pop().trim();
-            addEntry(afterPipe, entry);
-            const lastWord = afterPipe.split(/\s+/).pop();
-            addEntry(lastWord, entry);
+            for (const key of tagKeys(rawTag)) {
+              addEntry(key, entry);
+            }
           }
         } catch (err) {
           console.warn(`[startgg-tracker] Erreur event "${event.name}":`, err);
+        } finally {
+          loaded++;
+          onProgress?.(loaded, toProcess.length);
         }
       })
     );
   }
 
   const uniquePlayers = new Set(Object.values(map).flat().map(e => e.rawTag)).size;
-  console.info(`[startgg-tracker] Map: ${Object.keys(map).length} clés, ${uniquePlayers} joueurs multi-events`);
+  console.info(`[startgg-tracker] Map: ${Object.keys(map).length} clés, ${uniquePlayers} joueurs uniques`);
   return map;
 }
 
@@ -176,7 +210,7 @@ async function fetchPlayerPhaseUrl(rawTag, eventId, apiKey) {
   }
 
   let entrant = (event.entrants?.nodes || []).find((n) =>
-    n.participants?.some((p) => p.gamerTag.toLowerCase().trim() === rawTag.toLowerCase().trim())
+    n.participants?.some((p) => normalizeTag(p.gamerTag) === normalizeTag(rawTag))
   );
 
   // Fallback for team events: paginate all entrants and scan participants
@@ -205,7 +239,7 @@ async function fetchPlayerPhaseUrl(rawTag, eventId, apiKey) {
       if (!d) break;
       totalPages = d.pageInfo?.totalPages || 1;
       for (const node of d.nodes || []) {
-        if (node.participants?.some((p) => p.gamerTag.toLowerCase().trim() === rawTag.toLowerCase().trim())) {
+        if (node.participants?.some((p) => normalizeTag(p.gamerTag) === normalizeTag(rawTag))) {
           entrant = node;
           break outer;
         }
@@ -218,7 +252,7 @@ async function fetchPlayerPhaseUrl(rawTag, eventId, apiKey) {
 
   // teamName is the entrant name for team events (e.g. "Gohurisson / Partner"),
   // which differs from rawTag only in team events.
-  const teamName = entrant.name && entrant.name.toLowerCase() !== rawTag.toLowerCase()
+  const teamName = entrant.name && normalizeTag(entrant.name) !== normalizeTag(rawTag)
     ? entrant.name
     : null;
 
@@ -262,10 +296,9 @@ function applyPendingHighlights() {
   while ((n = walker.nextNode())) nodes.push(n);
 
   for (const textNode of nodes) {
-    const text = textNode.textContent.trim().toLowerCase();
+    const text = normalizeTag(textNode.textContent);
     for (const tag of pendingHighlights) {
-      // Exact match for solo events; partial match for team names
-      if (text === tag.toLowerCase() || text.includes(tag.toLowerCase())) {
+      if (text === normalizeTag(tag) || text.includes(normalizeTag(tag))) {
         const parent = textNode.parentElement;
         if (parent && !parent.classList.contains("sgg-highlight")) {
           parent.classList.add("sgg-highlight");
@@ -281,29 +314,25 @@ function applyPendingHighlights() {
 // ── Nombre max d'icônes visibles avant le badge "+" ─────────
 const MAX_VISIBLE_ICONS = 2;
 
-// ── Ouvre un bracket et enregistre le joueur à highlighter ───
+// ── Ouvre le bracket et copie le pseudo dans le presse-papier ─
+// Navigue vers /brackets de l'event et copie la partie utile du tag
+// (après le pipe si tag d'équipe) pour coller dans la barre de recherche.
 async function openBracket(rawTag, eventId, eventSlug) {
-  const { apiKey } = await storageGet(["apiKey"]);
-  let finalUrl = `https://www.start.gg/${eventSlug}`;
-  const toHighlight = [rawTag]; // always highlight by rawTag
+  // Partie utile du tag : après le pipe pour "Solary | Gluto" → "Gluto"
+  const searchTerm = rawTag.includes("|")
+    ? rawTag.split("|").pop().trim()
+    : rawTag;
 
-  if (apiKey) {
-    try {
-      const result = await fetchPlayerPhaseUrl(rawTag, eventId, apiKey);
-      if (result?.url) finalUrl = result.url;
-      // Also highlight by team name if present (team events)
-      if (result?.teamName) toHighlight.push(result.teamName);
-    } catch (err) {
-      console.warn("[startgg-tracker] Phase URL error:", err);
-    }
+  // Copie dans le presse-papier
+  try {
+    await navigator.clipboard.writeText(searchTerm);
+    console.info(`[startgg-tracker] Copié : "${searchTerm}"`);
+  } catch (err) {
+    console.warn("[startgg-tracker] Clipboard error:", err);
   }
 
-  const existing = await storageGet(["pendingHighlights"]);
-  const current = existing.pendingHighlights || [];
-  for (const tag of toHighlight) {
-    if (!current.includes(tag)) current.push(tag);
-  }
-  await new Promise((r) => chrome.storage.local.set({ pendingHighlights: current }, r));
+  // Ouvre directement l'onglet Bracket de l'event
+  const finalUrl = `https://www.start.gg/${eventSlug}/brackets`;
   window.open(finalUrl, "_blank", "noopener");
 }
 
@@ -455,7 +484,8 @@ function injectIcons(playerEventMap) {
     const existingIcons = parent.querySelectorAll(".sgg-event-icon");
     if (existingIcons.length > 0) continue;
 
-    const text = textNode.textContent.trim().toLowerCase();
+    // Utilise normalizeTag pour la lookup dans la map
+    const text = normalizeTag(textNode.textContent);
     const entries = playerEventMap[text];
     if (!entries?.length) continue;
 
@@ -493,6 +523,10 @@ function clearIcons() {
   });
 }
 
+
+
+
+// ── Messages depuis la popup ──────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "REFRESH_ICONS") {
     playerEventMapCache = null;
@@ -534,9 +568,13 @@ let pending = false;
 async function run() {
   if (pending) return;
   pending = true;
+  chrome.runtime.sendMessage({ type: "TRACKER_STATE", state: "loading", text: "Chargement…" }).catch(() => {});
   try {
     const { apiKey, enabledEventIds, pendingHighlights: storedHighlights } = await storageGet(["apiKey", "enabledEventIds", "pendingHighlights"]);
-    if (!apiKey) return;
+    if (!apiKey) {
+      chrome.runtime.sendMessage({ type: "TRACKER_STATE", state: "error" }).catch(() => {});
+      return;
+    }
 
     // Load pending highlights from storage into memory and clear storage
     if (storedHighlights?.length) {
@@ -545,28 +583,42 @@ async function run() {
     }
 
     const tournamentSlug = getTournamentSlug();
-    if (!tournamentSlug) return;
+    if (!tournamentSlug) {
+      
+      return;
+    }
 
     const currentEventSlug = getCurrentEventSlug();
 
     if (!playerEventMapCache) {
       playerEventMapCache = await buildPlayerEventMap(
-        tournamentSlug, currentEventSlug, enabledEventIds ?? null, apiKey
+        tournamentSlug,
+        currentEventSlug,
+        enabledEventIds ?? null,
+        apiKey,
+        (loaded, total) => chrome.runtime.sendMessage({ type: "TRACKER_STATE", state: "loading", text: `${loaded} / ${total}` }).catch(() => {})
       );
     }
+
     injectIcons(playerEventMapCache);
     applyPendingHighlights();
+    chrome.runtime.sendMessage({ type: "TRACKER_STATE", state: "done" }).catch(() => {});
   } catch (e) {
     console.error("[startgg-tracker]", e);
+    chrome.runtime.sendMessage({ type: "TRACKER_STATE", state: "error" }).catch(() => {});
   } finally {
     pending = false;
   }
 }
 
-// ── Inject highlight style ────────────────────────────────────
-const style = document.createElement("style");
-style.textContent = `.sgg-highlight { background-color: rgba(168, 85, 247, 0.25) !important; border-radius: 3px; padding: 0 2px; }`;
-document.head.appendChild(style);
-
-run();
-observeDOM();
+// ── Point d'entrée — uniquement highlights au chargement ─────
+// Les appels API ne partent QUE sur clic du bouton.
+(async () => {
+  const { pendingHighlights: storedHighlights } = await storageGet(["pendingHighlights"]);
+  if (storedHighlights?.length) {
+    for (const tag of storedHighlights) pendingHighlights.add(tag);
+    chrome.storage.local.remove("pendingHighlights");
+  }
+  applyPendingHighlights();
+  observeDOM();
+})();
