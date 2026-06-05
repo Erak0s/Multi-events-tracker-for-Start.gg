@@ -1,4 +1,5 @@
-// popup.js v4 — Clé API + filtre events + i18n FR/EN
+// ── Polyfill API browser/chrome ───────────────────────────────
+const browserAPI = typeof browser !== "undefined" ? browser : chrome;
 
 // ── Traductions ───────────────────────────────────────────────
 const I18N = {
@@ -24,6 +25,14 @@ const I18N = {
     trackerError:     "Erreur",
     trackerCooldown:  "Patiente…",
     trackerNoKey:     "⚠️ Clé API manquante",
+    exportBtn:        "⬇ Exporter CSV",
+    exportLoading:    "Export en cours…",
+    exportDone:       "✅ Téléchargé !",
+    exportNoData:     "⚠ Lance le tracker d'abord",
+    reinjectBtn:      "Réinjecter",
+    reinjectLoading:  "Réinjection…",
+    reinjectDone:     "✅ Injecté !",
+    reinjectNoCache:  "⚠ Pas de cache",
   },
   en: {
     apiKeyLabel:      "start.gg API key",
@@ -47,6 +56,14 @@ const I18N = {
     trackerError:     "Error",
     trackerCooldown:  "Please wait…",
     trackerNoKey:     "⚠️ API key missing",
+    exportBtn:        "⬇ Export CSV",
+    exportLoading:    "Exporting…",
+    exportDone:       "✅ Downloaded!",
+    exportNoData:     "⚠ Run the tracker first",
+    reinjectBtn:      "Re-inject",
+    reinjectLoading:  "Injecting…",
+    reinjectDone:     "✅ Injected!",
+    reinjectNoCache:  "⚠ No cache",
   },
 };
 
@@ -83,8 +100,9 @@ function applyTranslations() {
 }
 
 // ── Storage ───────────────────────────────────────────────────
+// Chrome MV3 et Firefox supportent tous deux les Promises nativement sur storage
 function storageGet(keys) {
-  return new Promise((r) => chrome.storage.local.get(keys, r));
+  return browserAPI.storage.local.get(keys);
 }
 
 // ── UI refs ───────────────────────────────────────────────────
@@ -113,24 +131,24 @@ function setLang(lang) {
   btnFr.classList.toggle("active", lang === "fr");
   btnEn.classList.toggle("active", lang === "en");
   applyTranslations();
-  chrome.storage.local.set({ lang });
+  browserAPI.storage.local.set({ lang });
 }
 
 btnFr.addEventListener("click", () => setLang("fr"));
 btnEn.addEventListener("click", () => setLang("en"));
 
 // ── Clé API ───────────────────────────────────────────────────
-btnSave.addEventListener("click", () => {
+btnSave.addEventListener("click", async () => {
   const key = apiKeyInput.value.trim();
   if (!key) { setStatus("statusEmpty", "err"); return; }
-  chrome.storage.local.set({ apiKey: key }, () => setStatus("statusSaved", "ok"));
+  await browserAPI.storage.local.set({ apiKey: key });
+  setStatus("statusSaved", "ok");
 });
 
-btnClear.addEventListener("click", () => {
-  chrome.storage.local.remove("apiKey", () => {
-    apiKeyInput.value = "";
-    setStatus("statusCleared", "ok");
-  });
+btnClear.addEventListener("click", async () => {
+  await browserAPI.storage.local.remove("apiKey");
+  apiKeyInput.value = "";
+  setStatus("statusCleared", "ok");
 });
 
 apiKeyInput.addEventListener("keydown", (e) => { if (e.key === "Enter") btnSave.click(); });
@@ -140,9 +158,9 @@ async function loadEventsList() {
   // Récupère le slug de la page active
   let tournamentSlug = null;
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const [tab] = await browserAPI.tabs.query({ active: true, currentWindow: true });
     if (tab?.id) {
-      const response = await chrome.tabs.sendMessage(tab.id, { type: "GET_TOURNAMENT_SLUG" }).catch(() => null);
+      const response = await browserAPI.tabs.sendMessage(tab.id, { type: "GET_TOURNAMENT_SLUG" }).catch(() => null);
       tournamentSlug = response?.slug || null;
     }
   } catch (_) {}
@@ -254,17 +272,19 @@ toggleAllBtn.addEventListener("click", () => {
 applyBtn.addEventListener("click", async () => {
   const boxes = eventsList.querySelectorAll("input[type='checkbox']");
   const enabledEventIds = [...boxes].filter((b) => b.checked).map((b) => b.dataset.eventId);
-  await new Promise((r) => chrome.storage.local.set({ enabledEventIds }, r));
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (tab?.id) chrome.tabs.sendMessage(tab.id, { type: "REFRESH_ICONS" });
+  await browserAPI.storage.local.set({ enabledEventIds });
+  const [tab] = await browserAPI.tabs.query({ active: true, currentWindow: true });
+  if (tab?.id) browserAPI.tabs.sendMessage(tab.id, { type: "REFRESH_ICONS" });
   setStatus("statusApplied", "ok");
 });
 
 // ── Tracker button ───────────────────────────────────────────
-const trackerSection = document.getElementById("trackerSection");
-const trackerBtn     = document.getElementById("trackerBtn");
+const trackerSection  = document.getElementById("trackerSection");
+const trackerBtn      = document.getElementById("trackerBtn");
 const trackerBtnLabel = document.getElementById("trackerBtnLabel");
-const trackerStatus  = document.getElementById("trackerStatus");
+const trackerStatus   = document.getElementById("trackerStatus");
+const exportBtn       = document.getElementById("exportBtn");
+const reinjectBtn     = document.getElementById("reinjectBtn");
 
 let trackerLastRunAt = 0;
 const TRACKER_COOLDOWN_MS = 5000;
@@ -276,9 +296,18 @@ function setTrackerState(state) {
   if (state === "loading") {
     trackerBtn.classList.add("sgg-loading-state");
     trackerBtnLabel.textContent = t("trackerLoading");
+    exportBtn.disabled = true;
+    exportBtn.title = t("exportBtn");
+    reinjectBtn.disabled = true;
+    browserAPI.storage.local.remove("trackerDone");
   } else if (state === "done") {
     trackerBtn.classList.add("sgg-done-state");
     trackerBtnLabel.textContent = t("trackerDone");
+    exportBtn.disabled = false;
+    exportBtn.title = t("exportBtn");
+    reinjectBtn.disabled = false;
+    reinjectBtn.title = t("reinjectBtn");
+    browserAPI.storage.local.set({ trackerDone: true });
     setTimeout(() => {
       trackerBtn.classList.remove("sgg-done-state");
       trackerBtnLabel.textContent = t("trackerBtn");
@@ -302,7 +331,7 @@ function setTrackerState(state) {
 }
 
 // Écoute les messages de progression venant du content script
-chrome.runtime.onMessage.addListener((msg) => {
+browserAPI.runtime.onMessage.addListener((msg) => {
   if (msg.type === "TRACKER_STATE") {
     if (msg.state === "loading") {
       setTrackerState("loading");
@@ -334,18 +363,70 @@ trackerBtn.addEventListener("click", async () => {
   setTrackerState("loading");
   trackerLastRunAt = Date.now();
 
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const [tab] = await browserAPI.tabs.query({ active: true, currentWindow: true });
   if (tab?.id) {
-    chrome.tabs.sendMessage(tab.id, { type: "REFRESH_ICONS" });
+    browserAPI.tabs.sendMessage(tab.id, { type: "REFRESH_ICONS" });
+  }
+});
+
+exportBtn.addEventListener("click", async () => {
+  if (exportBtn.disabled) return;
+  const [tab] = await browserAPI.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) return;
+
+  exportBtn.disabled = true;
+  exportBtn.title = t("exportLoading");
+
+  const response = await browserAPI.tabs.sendMessage(tab.id, { type: "EXPORT_CSV" }).catch(() => null);
+
+  if (response?.ok) {
+    exportBtn.classList.add("sgg-export-done");
+    exportBtn.title = t("exportDone");
+    setTimeout(() => {
+      exportBtn.classList.remove("sgg-export-done");
+      exportBtn.title = t("exportBtn");
+      exportBtn.disabled = false;
+    }, 2000);
+  } else {
+    exportBtn.classList.add("sgg-export-error");
+    exportBtn.title = t("exportNoData");
+    exportBtn.disabled = false;
+    setTimeout(() => {
+      exportBtn.classList.remove("sgg-export-error");
+      exportBtn.title = t("exportBtn");
+    }, 2500);
+  }
+});
+
+reinjectBtn.addEventListener("click", async () => {
+  if (reinjectBtn.disabled) return;
+  const [tab] = await browserAPI.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) return;
+
+  reinjectBtn.disabled = true;
+  reinjectBtn.title = t("reinjectLoading");
+
+  const response = await browserAPI.tabs.sendMessage(tab.id, { type: "REINJECT" }).catch(() => null);
+
+  if (response?.ok) {
+    reinjectBtn.title = t("reinjectDone");
+    setTimeout(() => {
+      reinjectBtn.title = t("reinjectBtn");
+      reinjectBtn.disabled = false;
+    }, 2000);
+  } else {
+    reinjectBtn.title = t("reinjectNoCache");
+    reinjectBtn.disabled = false;
+    setTimeout(() => { reinjectBtn.title = t("reinjectBtn"); }, 2500);
   }
 });
 
 async function loadTrackerSection() {
   let tournamentSlug = null;
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const [tab] = await browserAPI.tabs.query({ active: true, currentWindow: true });
     if (tab?.id) {
-      const response = await chrome.tabs.sendMessage(tab.id, { type: "GET_TOURNAMENT_SLUG" }).catch(() => null);
+      const response = await browserAPI.tabs.sendMessage(tab.id, { type: "GET_TOURNAMENT_SLUG" }).catch(() => null);
       tournamentSlug = response?.slug || null;
     }
   } catch (_) {}
@@ -360,7 +441,7 @@ async function loadTrackerSection() {
 
 // ── Init ──────────────────────────────────────────────────────
 async function init() {
-  const { apiKey, lang } = await storageGet(["apiKey", "lang"]);
+  const { apiKey, lang, trackerDone } = await storageGet(["apiKey", "lang", "trackerDone"]);
   if (apiKey) apiKeyInput.value = apiKey;
 
   const savedLang = lang === "en" ? "en" : "fr";
@@ -368,6 +449,14 @@ async function init() {
   btnEn.classList.toggle("active", savedLang === "en");
   currentLang = savedLang;
   applyTranslations();
+
+  // Restaure les boutons si le tracker avait déjà tourné
+  if (trackerDone) {
+    exportBtn.disabled = false;
+    exportBtn.title = t("exportBtn");
+    reinjectBtn.disabled = false;
+    reinjectBtn.title = t("reinjectBtn");
+  }
 
   await loadEventsList();
   await loadTrackerSection();
