@@ -222,6 +222,73 @@
 
     #trackerStatus { margin-top: 6px; font-size: 11px; text-align: center; min-height: 14px; color: var(--text-muted); }
 
+    .tracker-row {
+      display: flex;
+      gap: 8px;
+      align-items: stretch;
+    }
+    .tracker-row #trackerBtn {
+      flex: 1;
+    }
+
+    #exportBtn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex: unset;
+      width: 38px;
+      padding: 0;
+      background: color-mix(in srgb, var(--accent) 15%, transparent);
+      color: var(--accent);
+      border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+      border-radius: 8px;
+      cursor: pointer;
+      transition: opacity .15s, background .15s;
+      flex-shrink: 0;
+    }
+    #exportBtn:not(:disabled):hover {
+      background: color-mix(in srgb, var(--accent) 25%, transparent);
+    }
+    #exportBtn:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+    #exportBtn svg { pointer-events: none; }
+    #exportBtn.sgg-export-done {
+      color: #4cba82;
+      border-color: color-mix(in srgb, #4cba82 40%, transparent);
+      background: color-mix(in srgb, #4cba82 15%, transparent);
+    }
+    #exportBtn.sgg-export-error {
+      color: #e06060;
+      border-color: color-mix(in srgb, #e06060 40%, transparent);
+      background: color-mix(in srgb, #e06060 15%, transparent);
+    }
+
+    #reinjectBtn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex: unset;
+      width: 38px;
+      padding: 0;
+      background: color-mix(in srgb, #f6c05a 12%, transparent);
+      color: #f6c05a;
+      border: 1px solid color-mix(in srgb, #f6c05a 35%, transparent);
+      border-radius: 8px;
+      cursor: pointer;
+      transition: opacity .15s, background .15s;
+      flex-shrink: 0;
+    }
+    #reinjectBtn:not(:disabled):hover {
+      background: color-mix(in srgb, #f6c05a 22%, transparent);
+    }
+    #reinjectBtn:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+    #reinjectBtn svg { pointer-events: none; }
+
     footer {
       display: flex;
       align-items: center;
@@ -280,13 +347,32 @@
 
 <!-- Tracker -->
 <div class="section" id="trackerSection">
-  <button id="trackerBtn">
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
-         stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-      <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-    </svg>
-    <span id="trackerBtnLabel" data-i18n="trackerBtn"></span>
-  </button>
+  <div class="tracker-row">
+    <button id="trackerBtn">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+      </svg>
+      <span id="trackerBtnLabel" data-i18n="trackerBtn"></span>
+    </button>
+    <!-- Réinjecter depuis le cache — icône éclair -->
+    <button id="reinjectBtn" disabled title="">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+      </svg>
+    </button>
+    <!-- Exporter CSV — icône fichier -->
+    <button id="exportBtn" disabled title="">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+        <polyline points="14 2 14 8 20 8"/>
+        <line x1="12" y1="12" x2="12" y2="18"/>
+        <polyline points="9 15 12 18 15 15"/>
+      </svg>
+    </button>
+  </div>
   <div id="trackerStatus"></div>
 </div>
 

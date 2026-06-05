@@ -3,13 +3,16 @@
 //  Approche : copie du pseudo dans le presse-papier + navigation vers /brackets
 // ============================================================
 
+// ── Polyfill API browser/chrome ───────────────────────────────
+const browserAPI = typeof browser !== "undefined" ? browser : chrome;
+
 const API_URL = "https://api.start.gg/gql/alpha";
 
 // In-memory set of player names to highlight on next page load
 let pendingHighlights = new Set();
 
 function storageGet(keys) {
-  return new Promise((r) => chrome.storage.local.get(keys, r));
+  return browserAPI.storage.local.get(keys);
 }
 function getTournamentSlug() {
   const m = window.location.pathname.match(/\/tournament\/([^\/]+)/);
@@ -82,30 +85,70 @@ function pickGameImage(images) {
 }
 
 // ── Fetch entrants (paginé) ───────────────────────────────────
+// Retourne { gamerTag, teamName, poolName, poolDate } par participant.
+// Pour les events solo   : "Solary | Gluto" → gamerTag="Solary | Gluto", teamName="Solary"
+// Pour les events équipe : entrantName="Team itazan", participants=[Sahara., Ryukichi, …]
+//                          → un objet par participant, teamName="Team itazan"
 async function fetchEventEntrants(eventId, apiKey) {
   const query = `
     query EventEntrants($eventId: ID!, $page: Int!) {
       event(id: $eventId) {
         entrants(query: { page: $page, perPage: 100 }) {
           pageInfo { totalPages }
-          nodes { participants { gamerTag } }
+          nodes {
+            name
+            participants { gamerTag }
+            seeds {
+              phaseGroup {
+                id
+                displayIdentifier
+                startAt
+                phase { name phaseOrder }
+              }
+            }
+          }
         }
       }
     }
   `;
   let page = 1, totalPages = 1;
-  const tags = [];
+  const entrants = [];
   while (page <= totalPages) {
     const data = await gqlQuery(query, { eventId, page }, apiKey);
     const d = data?.data?.event?.entrants;
     if (!d) break;
     totalPages = d.pageInfo?.totalPages || 1;
-    for (const node of d.nodes || [])
-      for (const p of node.participants || [])
-        if (p.gamerTag) tags.push(p.gamerTag);
+    for (const node of d.nodes || []) {
+      const seeds = node.seeds || [];
+      const seed = seeds.sort((a, b) =>
+        (a.phaseGroup?.phase?.phaseOrder ?? 99) - (b.phaseGroup?.phase?.phaseOrder ?? 99)
+      )[0];
+      const pg = seed?.phaseGroup;
+      const poolName = pg
+        ? `${pg.phase?.name ?? "Pool"} ${pg.displayIdentifier ?? ""}`.trim()
+        : null;
+      const poolDate = pg?.startAt ? pg.startAt * 1000 : null;
+
+      const participants = node.participants || [];
+      const isTeamEvent = participants.length > 1;
+
+      for (const p of participants) {
+        if (!p.gamerTag) continue;
+        // Event équipe : teamName = nom de l'entrant (ex: "Team itazan")
+        // Event solo   : teamName = partie avant le pipe (ex: "Solary" depuis "Solary | Gluto"), ou null
+        let teamName = null;
+        if (isTeamEvent) {
+          teamName = node.name ?? null;
+        } else {
+          const pipeIdx = p.gamerTag.indexOf("|");
+          teamName = pipeIdx > 0 ? p.gamerTag.slice(0, pipeIdx).trim() : null;
+        }
+        entrants.push({ gamerTag: p.gamerTag, teamName, poolName, poolDate });
+      }
+    }
     page++;
   }
-  return tags;
+  return entrants;
 }
 
 // ── Construit la map ──────────────────────────────────────────
@@ -121,12 +164,12 @@ async function buildPlayerEventMap(tournamentSlug, currentEventSlug, enabledEven
       gameName: e.videogame?.name || null,
     }));
 
-  chrome.storage.local.set({
+  await browserAPI.storage.local.set({
     [`events_${tournamentSlug}`]: eventsForPopup,
     lastTournamentSlug: tournamentSlug,
   });
 
-  chrome.runtime.sendMessage({ type: "EVENTS_UPDATED", slug: tournamentSlug }).catch(() => {});
+  browserAPI.runtime.sendMessage({ type: "EVENTS_UPDATED", slug: tournamentSlug }).catch(() => {});
 
   const activeIds = enabledEventIds ?? eventsForPopup.map((e) => e.id);
   const toProcess = eventsForPopup.filter((e) => activeIds.includes(e.id));
@@ -146,11 +189,12 @@ async function buildPlayerEventMap(tournamentSlug, currentEventSlug, enabledEven
     await Promise.all(
       toProcess.slice(i, i + 3).map(async (event) => {
         try {
-          const rawTags = await fetchEventEntrants(event.id, apiKey);
-          for (const rawTag of rawTags) {
+          const entrants = await fetchEventEntrants(event.id, apiKey);
+          for (const { gamerTag: rawTag, teamName, poolName, poolDate } of entrants) {
             const entry = {
               eventId: event.id, eventName: event.name, eventSlug: event.slug,
-              gameImageUrl: event.gameImageUrl, gameName: event.gameName, rawTag,
+              gameImageUrl: event.gameImageUrl, gameName: event.gameName,
+              rawTag, teamName, poolName, poolDate,
             };
             for (const key of tagKeys(rawTag)) {
               addEntry(key, entry);
@@ -314,33 +358,42 @@ function applyPendingHighlights() {
 // ── Nombre max d'icônes visibles avant le badge "+" ─────────
 const MAX_VISIBLE_ICONS = 2;
 
-// ── Ouvre le bracket et copie le pseudo dans le presse-papier ─
-// Navigue vers /brackets de l'event et copie la partie utile du tag
-// (après le pipe si tag d'équipe) pour coller dans la barre de recherche.
-async function openBracket(rawTag, eventId, eventSlug) {
-  // Partie utile du tag : après le pipe pour "Solary | Gluto" → "Gluto"
-  const searchTerm = rawTag.includes("|")
-    ? rawTag.split("|").pop().trim()
-    : rawTag;
+// ── Ouvre le bracket et copie le pseudo (+ team) dans le presse-papier ─
+async function openBracket(rawTag, eventId, eventSlug, teamName) {
+  // Partie utile du tag pour la recherche : après le pipe pour "Solary | Gluto" → "Gluto"
+  const playerTag = rawTag.includes("|") ? rawTag.split("|").pop().trim() : rawTag;
 
-  // Copie dans le presse-papier
+  // Si teamName dispo, copier "Team itazan" pour les events équipe,
+  // sinon juste le pseudo pour la recherche dans le bracket
+  const clipboardText = teamName ?? playerTag;
+
   try {
-    await navigator.clipboard.writeText(searchTerm);
-    console.info(`[startgg-tracker] Copié : "${searchTerm}"`);
+    await navigator.clipboard.writeText(clipboardText);
+    console.info(`[startgg-tracker] Copié : "${clipboardText}"`);
   } catch (err) {
     console.warn("[startgg-tracker] Clipboard error:", err);
   }
 
-  // Ouvre directement l'onglet Bracket de l'event
   const finalUrl = `https://www.start.gg/${eventSlug}/brackets`;
   window.open(finalUrl, "_blank", "noopener");
 }
 
+// ── Formate une date de pool ──────────────────────────────────
+function formatPoolDate(tsMs) {
+  if (!tsMs) return null;
+  return new Date(tsMs).toLocaleDateString("fr-FR", {
+    weekday: "short", day: "2-digit", month: "2-digit",
+  }); // ex: "sam. 07/06"
+}
+
 // ── Fabrique une icône individuelle ──────────────────────────
-function buildIcon(rawTag, { eventId, eventName, eventSlug, gameImageUrl, gameName }) {
+function buildIcon(rawTag, { eventId, eventName, eventSlug, gameImageUrl, gameName, poolName, poolDate, teamName }) {
   const a = document.createElement("a");
   a.className = "sgg-event-icon";
-  a.title = `${eventName}${gameName ? ` · ${gameName}` : ""}`;
+  const dateStr = formatPoolDate(poolDate);
+  const poolInfo = [poolName, dateStr].filter(Boolean).join(" · ");
+  const teamInfo = teamName ? `🏷 ${teamName}` : null;
+  a.title = [eventName, gameName, poolInfo, teamInfo].filter(Boolean).join(" · ");
   a.setAttribute("role", "button");
   a.setAttribute("aria-label", `Voir le bracket ${eventName}`);
 
@@ -359,7 +412,7 @@ function buildIcon(rawTag, { eventId, eventName, eventSlug, gameImageUrl, gameNa
   a.addEventListener("click", async (e) => {
     e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
     a.classList.add("sgg-loading");
-    await openBracket(rawTag, eventId, eventSlug);
+    await openBracket(rawTag, eventId, eventSlug, teamName);
     a.classList.remove("sgg-loading");
   }, true);
 
@@ -423,6 +476,22 @@ function buildMoreBadge(rawTag, hiddenEntries) {
         label.appendChild(document.createElement("br"));
         label.appendChild(sub);
       }
+      const dateStr = formatPoolDate(entry.poolDate);
+      const poolInfo = [entry.poolName, dateStr].filter(Boolean).join(" · ");
+      if (poolInfo) {
+        const poolSub = document.createElement("span");
+        poolSub.className = "sgg-popover-sub";
+        poolSub.textContent = poolInfo;
+        label.appendChild(document.createElement("br"));
+        label.appendChild(poolSub);
+      }
+      if (entry.teamName) {
+        const teamSub = document.createElement("span");
+        teamSub.className = "sgg-popover-sub";
+        teamSub.textContent = `🏷 ${entry.teamName}`;
+        label.appendChild(document.createElement("br"));
+        label.appendChild(teamSub);
+      }
       row.appendChild(label);
 
       for (const evtType of ["mousedown", "mouseup", "pointerdown", "pointerup", "touchstart"]) {
@@ -432,7 +501,7 @@ function buildMoreBadge(rawTag, hiddenEntries) {
       row.addEventListener("click", async (e) => {
         e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
         row.classList.add("sgg-loading");
-        await openBracket(rawTag, entry.eventId, entry.eventSlug);
+        await openBracket(rawTag, entry.eventId, entry.eventSlug, entry.teamName);
         row.classList.remove("sgg-loading");
         closeAllPopovers();
       }, true);
@@ -526,8 +595,117 @@ function clearIcons() {
 
 
 
+// ── Export CSV ────────────────────────────────────────────────
+function buildExportData(playerEventMap) {
+  const playerMap = {};
+
+  for (const entries of Object.values(playerEventMap)) {
+    for (const entry of entries) {
+      const key = normalizeTag(entry.rawTag);
+      if (!playerMap[key]) playerMap[key] = { rawTag: entry.rawTag, eventMap: {}, teamNames: {} };
+      if (!playerMap[key].eventMap[entry.eventId]) {
+        playerMap[key].eventMap[entry.eventId] = entry;
+      }
+      // Collecte les teamNames pour ce joueur (déduplication par valeur)
+      if (entry.teamName) {
+        playerMap[key].teamNames[entry.teamName] = (playerMap[key].teamNames[entry.teamName] ?? 0) + 1;
+      }
+    }
+  }
+
+  const allEventsMap = {};
+  for (const { eventMap } of Object.values(playerMap)) {
+    for (const entry of Object.values(eventMap)) {
+      if (!allEventsMap[entry.eventId]) allEventsMap[entry.eventId] = entry;
+    }
+  }
+  const allEvents = Object.values(allEventsMap).sort((a, b) => {
+    const da = a.poolDate ?? Infinity, db = b.poolDate ?? Infinity;
+    if (da !== db) return da - db;
+    return a.eventName.localeCompare(b.eventName);
+  });
+
+  const rows = Object.values(playerMap)
+    .map(({ rawTag, eventMap, teamNames }) => {
+      // Prend le teamName le plus fréquent (ou null si aucun)
+      const teamName = Object.keys(teamNames).sort((a, b) => teamNames[b] - teamNames[a])[0] ?? null;
+      return { rawTag, teamName, nbEvents: Object.keys(eventMap).length, eventMap };
+    })
+    .sort((a, b) => b.nbEvents - a.nbEvents || a.rawTag.localeCompare(b.rawTag));
+
+  return { rows, allEvents };
+}
+
+function exportToCSV(playerEventMap, tournamentSlug) {
+  const { rows, allEvents } = buildExportData(playerEventMap);
+
+  const colHeader = (entry) => {
+    const dateStr = formatPoolDate(entry.poolDate);
+    return dateStr ? `${entry.eventName} — ${dateStr}` : entry.eventName;
+  };
+
+  // Colonne Team entre "Nb Events" et les events
+  const headers = ["Joueur", "Team", "Nb Events", ...allEvents.map(colHeader)];
+
+  const escape = (v) => {
+    const s = String(v ?? "");
+    return s.includes(",") || s.includes('"') || s.includes("\n")
+      ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+
+  const lines = [
+    headers.map(escape).join(","),
+    ...rows.map(({ rawTag, teamName, nbEvents, eventMap }) => {
+      const cells = allEvents.map(ev => {
+        const entry = eventMap[ev.eventId];
+        return entry ? escape(entry.poolName ?? "✓") : "";
+      });
+      return [escape(rawTag), escape(teamName ?? ""), nbEvents, ...cells].join(",");
+    }),
+  ];
+
+  const csv = lines.join("\n");
+  const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `startgg_${tournamentSlug || "tournament"}_${new Date().toISOString().slice(0,10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+// ── Sérialisation de la map ───────────────────────────────────
+// La map est un objet { clé: entry[] } potentiellement lourd.
+// On la stocke sous la clé `playerMap_<tournamentSlug>`.
+async function saveMapToStorage(map, tournamentSlug) {
+  try {
+    const key = `playerMap_${tournamentSlug}`;
+    const serialized = JSON.stringify(map);
+    // Firefox storage.local supporte jusqu'à ~10MB, largement suffisant
+    await browserAPI.storage.local.set({ [key]: serialized });
+    console.info(`[startgg-tracker] Map sauvegardée (${(serialized.length / 1024).toFixed(1)} Ko)`);
+  } catch (e) {
+    console.warn("[startgg-tracker] Impossible de sauvegarder la map :", e);
+  }
+}
+
+async function loadMapFromStorage(tournamentSlug) {
+  try {
+    const key = `playerMap_${tournamentSlug}`;
+    const result = await storageGet([key]);
+    const raw = result[key];
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (e) {
+    console.warn("[startgg-tracker] Impossible de charger la map :", e);
+    return null;
+  }
+}
+
 // ── Messages depuis la popup ──────────────────────────────────
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+browserAPI.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "REFRESH_ICONS") {
     playerEventMapCache = null;
     clearIcons();
@@ -537,6 +715,42 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "GET_TOURNAMENT_SLUG") {
     sendResponse({ slug: getTournamentSlug() });
     return false;
+  }
+  if (msg.type === "EXPORT_CSV") {
+    if (!playerEventMapCache) {
+      sendResponse({ ok: false, reason: "no_data" });
+      return false;
+    }
+    exportToCSV(playerEventMapCache, getTournamentSlug());
+    sendResponse({ ok: true });
+    return false;
+  }
+  if (msg.type === "CHECK_CACHED_MAP") {
+    const slug = getTournamentSlug();
+    if (!slug) { sendResponse({ hasCache: false }); return false; }
+    loadMapFromStorage(slug).then(map => {
+      sendResponse({ hasCache: !!map });
+    });
+    return true; // async
+  }
+  if (msg.type === "REINJECT") {
+    const slug = getTournamentSlug();
+    if (!slug) { sendResponse({ ok: false }); return false; }
+    browserAPI.runtime.sendMessage({ type: "TRACKER_STATE", state: "loading", text: "Réinjection…" }).catch(() => {});
+    loadMapFromStorage(slug).then(map => {
+      if (!map) {
+        browserAPI.runtime.sendMessage({ type: "TRACKER_STATE", state: "error" }).catch(() => {});
+        sendResponse({ ok: false, reason: "no_cache" });
+        return;
+      }
+      playerEventMapCache = map;
+      clearIcons();
+      injectIcons(playerEventMapCache);
+      applyPendingHighlights();
+      browserAPI.runtime.sendMessage({ type: "TRACKER_STATE", state: "done" }).catch(() => {});
+      sendResponse({ ok: true });
+    });
+    return true; // async
   }
 });
 
@@ -568,18 +782,18 @@ let pending = false;
 async function run() {
   if (pending) return;
   pending = true;
-  chrome.runtime.sendMessage({ type: "TRACKER_STATE", state: "loading", text: "Chargement…" }).catch(() => {});
+  browserAPI.runtime.sendMessage({ type: "TRACKER_STATE", state: "loading", text: "Chargement…" }).catch(() => {});
   try {
     const { apiKey, enabledEventIds, pendingHighlights: storedHighlights } = await storageGet(["apiKey", "enabledEventIds", "pendingHighlights"]);
     if (!apiKey) {
-      chrome.runtime.sendMessage({ type: "TRACKER_STATE", state: "error" }).catch(() => {});
+      browserAPI.runtime.sendMessage({ type: "TRACKER_STATE", state: "error" }).catch(() => {});
       return;
     }
 
     // Load pending highlights from storage into memory and clear storage
     if (storedHighlights?.length) {
       for (const tag of storedHighlights) pendingHighlights.add(tag);
-      chrome.storage.local.remove("pendingHighlights");
+      browserAPI.storage.local.remove("pendingHighlights");
     }
 
     const tournamentSlug = getTournamentSlug();
@@ -596,16 +810,18 @@ async function run() {
         currentEventSlug,
         enabledEventIds ?? null,
         apiKey,
-        (loaded, total) => chrome.runtime.sendMessage({ type: "TRACKER_STATE", state: "loading", text: `${loaded} / ${total}` }).catch(() => {})
+        (loaded, total) => browserAPI.runtime.sendMessage({ type: "TRACKER_STATE", state: "loading", text: `${loaded} / ${total}` }).catch(() => {})
       );
+      // Persistance pour réinjection sur d'autres onglets/pages
+      await saveMapToStorage(playerEventMapCache, tournamentSlug);
     }
 
     injectIcons(playerEventMapCache);
     applyPendingHighlights();
-    chrome.runtime.sendMessage({ type: "TRACKER_STATE", state: "done" }).catch(() => {});
+    browserAPI.runtime.sendMessage({ type: "TRACKER_STATE", state: "done" }).catch(() => {});
   } catch (e) {
     console.error("[startgg-tracker]", e);
-    chrome.runtime.sendMessage({ type: "TRACKER_STATE", state: "error" }).catch(() => {});
+    browserAPI.runtime.sendMessage({ type: "TRACKER_STATE", state: "error" }).catch(() => {});
   } finally {
     pending = false;
   }
@@ -613,11 +829,12 @@ async function run() {
 
 // ── Point d'entrée — uniquement highlights au chargement ─────
 // Les appels API ne partent QUE sur clic du bouton.
+// La réinjection depuis le cache se fait via le bouton ⚡ de la popup.
 (async () => {
   const { pendingHighlights: storedHighlights } = await storageGet(["pendingHighlights"]);
   if (storedHighlights?.length) {
     for (const tag of storedHighlights) pendingHighlights.add(tag);
-    chrome.storage.local.remove("pendingHighlights");
+    browserAPI.storage.local.remove("pendingHighlights");
   }
   applyPendingHighlights();
   observeDOM();
