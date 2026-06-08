@@ -1,5 +1,7 @@
 // ── Polyfill API browser/chrome ───────────────────────────────
 const browserAPI = typeof browser !== "undefined" ? browser : chrome;
+document.getElementById('ext-version').textContent =
+  'version ' + chrome.runtime.getManifest().version;
 
 // ── Traductions ───────────────────────────────────────────────
 const I18N = {
