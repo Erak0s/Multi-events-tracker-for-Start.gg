@@ -358,24 +358,35 @@ function applyPendingHighlights() {
 // ── Nombre max d'icônes visibles avant le badge "+" ─────────
 const MAX_VISIBLE_ICONS = 2;
 
-// ── Ouvre le bracket et copie le pseudo (+ team) dans le presse-papier ─
 async function openBracket(rawTag, eventId, eventSlug, teamName) {
-  // Partie utile du tag pour la recherche : après le pipe pour "Solary | Gluto" → "Gluto"
   const playerTag = rawTag.includes("|") ? rawTag.split("|").pop().trim() : rawTag;
-
-  // Si teamName dispo, copier "Team itazan" pour les events équipe,
-  // sinon juste le pseudo pour la recherche dans le bracket
   const clipboardText = teamName ?? playerTag;
 
+  // ── Tentative de navigation directe vers la phase du joueur ──
+  let directUrl = null;
   try {
-    await navigator.clipboard.writeText(clipboardText);
-    console.info(`[startgg-tracker] Copié : "${clipboardText}"`);
+    const { apiKey } = await storageGet(["apiKey"]);
+    if (apiKey) {
+      const result = await fetchPlayerPhaseUrl(rawTag, eventId, apiKey);
+      if (result?.url) directUrl = result.url;
+    }
   } catch (err) {
-    console.warn("[startgg-tracker] Clipboard error:", err);
+    console.warn("[startgg-tracker] fetchPlayerPhaseUrl échoué, fallback :", err);
   }
 
-  const finalUrl = `https://www.start.gg/${eventSlug}/brackets`;
-  window.open(finalUrl, "_blank", "noopener");
+  if (directUrl) {
+    // Navigation directe vers la phase — pas besoin du presse-papier
+    window.open(directUrl, "_blank", "noopener");
+  } else {
+    // Fallback : page /brackets + copie du pseudo
+    try {
+      await navigator.clipboard.writeText(clipboardText);
+      console.info(`[startgg-tracker] Copié : "${clipboardText}"`);
+    } catch (err) {
+      console.warn("[startgg-tracker] Clipboard error:", err);
+    }
+    window.open(`https://www.start.gg/${eventSlug}/brackets`, "_blank", "noopener");
+  }
 }
 
 // ── Formate une date de pool ──────────────────────────────────
