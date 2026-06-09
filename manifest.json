@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "start.gg Multi-Event Tracker",
-  "version": "1.4.9",
+  "version": "1.4.10",
   "description": "Affiche les events auxquels chaque joueur est inscrit sur start.gg",
 
   "permissions": [
@@ -42,7 +42,7 @@
 
   "browser_specific_settings": {
     "gecko": {
-      "id": "startgg-tracker@extension",
+      "id": "startgg-multi-event-tracker@extension",
       "strict_min_version": "109.0"
     }
   }

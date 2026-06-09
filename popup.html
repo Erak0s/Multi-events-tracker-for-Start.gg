@@ -6,32 +6,6 @@
   <title>start.gg Multi-Event Tracker</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-
-    /*
-    =====================================================
-      🎨 GUIDE DES COULEURS — modifie ces variables
-         pour changer l'apparence du menu
-    =====================================================
-
-      --bg-base       fond principal du popup
-      --bg-section    fond des cards/sections
-      --bg-input      fond du champ texte
-      --bg-row        fond des lignes d'events
-      --border        couleur des bordures
-      --accent        couleur principale (boutons, accents)
-                      → aussi à changer dans popup.js
-                        pour accent-color des checkboxes
-      --text          texte principal
-      --text-dim      texte secondaire / labels
-      --text-muted    texte très discret (footer, hints)
-
-    Pour un thème clair par exemple :
-      --bg-base: #f5f5f5;
-      --bg-section: #ffffff;
-      --text: #111;
-      ... etc.
-    =====================================================
-    */
     :root {
       --bg-base:    #0d0d1c;
       --bg-section: #181830;
@@ -265,30 +239,6 @@
       background: color-mix(in srgb, #e06060 15%, transparent);
     }
 
-    #reinjectBtn {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex: unset;
-      width: 38px;
-      padding: 0;
-      background: color-mix(in srgb, #f6c05a 12%, transparent);
-      color: #f6c05a;
-      border: 1px solid color-mix(in srgb, #f6c05a 35%, transparent);
-      border-radius: 8px;
-      cursor: pointer;
-      transition: opacity .15s, background .15s;
-      flex-shrink: 0;
-    }
-    #reinjectBtn:not(:disabled):hover {
-      background: color-mix(in srgb, #f6c05a 22%, transparent);
-    }
-    #reinjectBtn:disabled {
-      opacity: 0.35;
-      cursor: not-allowed;
-    }
-    #reinjectBtn svg { pointer-events: none; }
-
     footer {
       display: flex;
       align-items: center;
@@ -311,9 +261,12 @@
 <body>
 
 <header>
+  <div class="logo">🎮</div>
   <div>
-    <h1>Multi-Event Tracker for start.gg</h1>
-    <p id="ext-version"></p>  </div>
+    <h1>Multi-Event Tracker</h1>
+    <p>start.gg bracket extension</p>
+    <p id="ext-version"></p>
+  </div>
   <div class="lang-toggle">
     <button class="lang-btn" id="btnFr">FR</button>
     <button class="lang-btn" id="btnEn">EN</button>
@@ -352,13 +305,6 @@
         <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
       </svg>
       <span id="trackerBtnLabel" data-i18n="trackerBtn"></span>
-    </button>
-    <!-- Réinjecter depuis le cache — icône éclair -->
-    <button id="reinjectBtn" disabled title="">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
-           stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-        <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
-      </svg>
     </button>
     <!-- Exporter CSV — icône fichier -->
     <button id="exportBtn" disabled title="">

@@ -319,40 +319,69 @@ async function fetchPlayerPhaseUrl(rawTag, eventId, apiKey) {
   return { url: best?.bracketUrl || null, teamName };
 }
 
-// ── Highlight les joueurs en attente ─────────────────────────
 function applyPendingHighlights() {
   if (!pendingHighlights.size) return;
 
-  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
-    acceptNode(node) {
-      const tag = node.parentElement?.tagName?.toLowerCase();
-      if (!tag || ["script","style","input","textarea","select","button","noscript"].includes(tag))
-        return NodeFilter.FILTER_REJECT;
-      const t = node.textContent.trim();
-      if (!t || t.length < 2 || t.length > 80 || t.includes("\n"))
-        return NodeFilter.FILTER_REJECT;
-      return NodeFilter.FILTER_ACCEPT;
-    },
-  });
+  // start.gg est une SPA — le contenu peut ne pas encore être dans le DOM.
+  // On tente immédiatement, puis on observe jusqu'à réussite ou timeout.
+  const MAX_WAIT_MS = 8000;
+  const start = Date.now();
 
-  const nodes = [];
-  let n;
-  while ((n = walker.nextNode())) nodes.push(n);
+  function tryHighlight() {
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        const tag = node.parentElement?.tagName?.toLowerCase();
+        if (!tag || ["script","style","input","textarea","select","button","noscript"].includes(tag))
+          return NodeFilter.FILTER_REJECT;
+        const t = node.textContent.trim();
+        if (!t || t.length < 2 || t.length > 80 || t.includes("\n"))
+          return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    });
 
-  for (const textNode of nodes) {
-    const text = normalizeTag(textNode.textContent);
-    for (const tag of pendingHighlights) {
-      if (text === normalizeTag(tag) || text.includes(normalizeTag(tag))) {
-        const parent = textNode.parentElement;
-        if (parent && !parent.classList.contains("sgg-highlight")) {
-          parent.classList.add("sgg-highlight");
+    const nodes = [];
+    let n;
+    while ((n = walker.nextNode())) nodes.push(n);
+
+    let firstMatch = null;
+
+    for (const textNode of nodes) {
+      const text = normalizeTag(textNode.textContent);
+      for (const tag of pendingHighlights) {
+        if (text === normalizeTag(tag) || text.includes(normalizeTag(tag))) {
+          const parent = textNode.parentElement;
+          if (parent && !parent.classList.contains("sgg-highlight")) {
+            parent.classList.add("sgg-highlight");
+            if (!firstMatch) firstMatch = parent;
+          }
         }
       }
     }
+
+    if (firstMatch) {
+      // Scroll jusqu'au premier élément trouvé, centré dans la vue
+      firstMatch.scrollIntoView({ behavior: "smooth", block: "center" });
+      pendingHighlights.clear();
+      return true; // succès
+    }
+    return false;
   }
 
-  // Clear after applying — one-shot highlight
-  pendingHighlights.clear();
+  // Tentative immédiate
+  if (tryHighlight()) return;
+
+  // Sinon, observer le DOM jusqu'à ce que le nom apparaisse
+  const observer = new MutationObserver(() => {
+    if (Date.now() - start > MAX_WAIT_MS) {
+      observer.disconnect();
+      pendingHighlights.clear();
+      return;
+    }
+    if (tryHighlight()) observer.disconnect();
+  });
+
+  observer.observe(document.body, { childList: true, subtree: true });
 }
 
 // ── Nombre max d'icônes visibles avant le badge "+" ─────────
@@ -375,7 +404,8 @@ async function openBracket(rawTag, eventId, eventSlug, teamName) {
   }
 
   if (directUrl) {
-    // Navigation directe vers la phase — pas besoin du presse-papier
+    // Stocke le tag pour que la nouvelle page puisse surligner le joueur
+    await browserAPI.storage.local.set({ pendingHighlights: [rawTag] });
     window.open(directUrl, "_blank", "noopener");
   } else {
     // Fallback : page /brackets + copie du pseudo

@@ -23,6 +23,7 @@ const I18N = {
     statusApplied:    "✅ Filtre appliqué !",
     trackerBtn:       "Lancer le Tracker",
     trackerLoading:   "Chargement…",
+    trackerFromCache: "Réinjection cache…",
     trackerDone:      "Chargé ✓",
     trackerError:     "Erreur",
     trackerCooldown:  "Patiente…",
@@ -31,10 +32,6 @@ const I18N = {
     exportLoading:    "Export en cours…",
     exportDone:       "✅ Téléchargé !",
     exportNoData:     "⚠ Lance le tracker d'abord",
-    reinjectBtn:      "Réinjecter",
-    reinjectLoading:  "Réinjection…",
-    reinjectDone:     "✅ Injecté !",
-    reinjectNoCache:  "⚠ Pas de cache",
   },
   en: {
     apiKeyLabel:      "start.gg API key",
@@ -54,6 +51,7 @@ const I18N = {
     statusApplied:    "✅ Filter applied!",
     trackerBtn:       "Launch Tracker",
     trackerLoading:   "Loading…",
+    trackerFromCache: "Loading from cache…",
     trackerDone:      "Loaded ✓",
     trackerError:     "Error",
     trackerCooldown:  "Please wait…",
@@ -62,10 +60,6 @@ const I18N = {
     exportLoading:    "Exporting…",
     exportDone:       "✅ Downloaded!",
     exportNoData:     "⚠ Run the tracker first",
-    reinjectBtn:      "Re-inject",
-    reinjectLoading:  "Injecting…",
-    reinjectDone:     "✅ Injected!",
-    reinjectNoCache:  "⚠ No cache",
   },
 };
 
@@ -102,7 +96,6 @@ function applyTranslations() {
 }
 
 // ── Storage ───────────────────────────────────────────────────
-// Chrome MV3 et Firefox supportent tous deux les Promises nativement sur storage
 function storageGet(keys) {
   return browserAPI.storage.local.get(keys);
 }
@@ -157,7 +150,6 @@ apiKeyInput.addEventListener("keydown", (e) => { if (e.key === "Enter") btnSave.
 
 // ── Filtre events ─────────────────────────────────────────────
 async function loadEventsList() {
-  // Récupère le slug de la page active
   let tournamentSlug = null;
   try {
     const [tab] = await browserAPI.tabs.query({ active: true, currentWindow: true });
@@ -167,7 +159,6 @@ async function loadEventsList() {
     }
   } catch (_) {}
 
-  // Fallback sur le dernier slug connu
   if (!tournamentSlug) {
     const s = await storageGet(["lastTournamentSlug"]);
     tournamentSlug = s.lastTournamentSlug || null;
@@ -181,9 +172,6 @@ async function loadEventsList() {
     return;
   }
 
-  // Lecture directe du storage — pas de boucle d'attente :
-  // la map n'est construite que sur clic du bouton Tracker,
-  // donc les events peuvent légitimement ne pas encore exister.
   const result = await storageGet([`events_${tournamentSlug}`, "enabledEventIds"]);
   const events = result[`events_${tournamentSlug}`];
   const { enabledEventIds } = result;
@@ -286,7 +274,6 @@ const trackerBtn      = document.getElementById("trackerBtn");
 const trackerBtnLabel = document.getElementById("trackerBtnLabel");
 const trackerStatus   = document.getElementById("trackerStatus");
 const exportBtn       = document.getElementById("exportBtn");
-const reinjectBtn     = document.getElementById("reinjectBtn");
 
 let trackerLastRunAt = 0;
 const TRACKER_COOLDOWN_MS = 5000;
@@ -300,15 +287,12 @@ function setTrackerState(state) {
     trackerBtnLabel.textContent = t("trackerLoading");
     exportBtn.disabled = true;
     exportBtn.title = t("exportBtn");
-    reinjectBtn.disabled = true;
     browserAPI.storage.local.remove("trackerDone");
   } else if (state === "done") {
     trackerBtn.classList.add("sgg-done-state");
     trackerBtnLabel.textContent = t("trackerDone");
     exportBtn.disabled = false;
     exportBtn.title = t("exportBtn");
-    reinjectBtn.disabled = false;
-    reinjectBtn.title = t("reinjectBtn");
     browserAPI.storage.local.set({ trackerDone: true });
     setTimeout(() => {
       trackerBtn.classList.remove("sgg-done-state");
@@ -363,12 +347,23 @@ trackerBtn.addEventListener("click", async () => {
   }
 
   setTrackerState("loading");
+  trackerBtnLabel.textContent = t("trackerFromCache");
   trackerLastRunAt = Date.now();
 
   const [tab] = await browserAPI.tabs.query({ active: true, currentWindow: true });
-  if (tab?.id) {
-    browserAPI.tabs.sendMessage(tab.id, { type: "REFRESH_ICONS" });
+  if (!tab?.id) return;
+
+  // ── Étape 1 : tenter la réinjection depuis le cache ──────────
+  const cached = await browserAPI.tabs.sendMessage(tab.id, { type: "REINJECT" }).catch(() => null);
+
+  if (cached?.ok) {
+    // Cache disponible et icônes injectées — on s'arrête là
+    return;
   }
+
+  // ── Étape 2 : pas de cache → appel API complet ───────────────
+  trackerBtnLabel.textContent = t("trackerLoading");
+  browserAPI.tabs.sendMessage(tab.id, { type: "REFRESH_ICONS" });
 });
 
 exportBtn.addEventListener("click", async () => {
@@ -397,29 +392,6 @@ exportBtn.addEventListener("click", async () => {
       exportBtn.classList.remove("sgg-export-error");
       exportBtn.title = t("exportBtn");
     }, 2500);
-  }
-});
-
-reinjectBtn.addEventListener("click", async () => {
-  if (reinjectBtn.disabled) return;
-  const [tab] = await browserAPI.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id) return;
-
-  reinjectBtn.disabled = true;
-  reinjectBtn.title = t("reinjectLoading");
-
-  const response = await browserAPI.tabs.sendMessage(tab.id, { type: "REINJECT" }).catch(() => null);
-
-  if (response?.ok) {
-    reinjectBtn.title = t("reinjectDone");
-    setTimeout(() => {
-      reinjectBtn.title = t("reinjectBtn");
-      reinjectBtn.disabled = false;
-    }, 2000);
-  } else {
-    reinjectBtn.title = t("reinjectNoCache");
-    reinjectBtn.disabled = false;
-    setTimeout(() => { reinjectBtn.title = t("reinjectBtn"); }, 2500);
   }
 });
 
@@ -452,12 +424,9 @@ async function init() {
   currentLang = savedLang;
   applyTranslations();
 
-  // Restaure les boutons si le tracker avait déjà tourné
   if (trackerDone) {
     exportBtn.disabled = false;
     exportBtn.title = t("exportBtn");
-    reinjectBtn.disabled = false;
-    reinjectBtn.title = t("reinjectBtn");
   }
 
   await loadEventsList();
